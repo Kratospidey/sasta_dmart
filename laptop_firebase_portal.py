@@ -18,7 +18,7 @@ app = Flask(__name__)
 FIREBASE_DB_URL = "https://sasta-dmart-default-rtdb.asia-southeast1.firebasedatabase.app"
 SERVICE_ACCOUNT_PATH = os.getenv(
     "FIREBASE_SERVICE_ACCOUNT_PATH",
-    r"C:\Users\param\Downloads\sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
+    r"./sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
 )
 
 FIREBASE_WEB_CONFIG = {
