@@ -1,0 +1,479 @@
+"""
+Pi checkout UI with Firebase-backed anonymous/login sessions.
+
+Features:
+- Camera preview + barcode scanning.
+- Anonymous checkout OR logged-in checkout via QR-based claim flow.
+- Pushes transactions directly to Firebase Realtime Database.
+- Dark/light mode toggle.
+"""
+
+import os
+import time
+import uuid
+from datetime import datetime, timedelta, timezone
+import tkinter as tk
+from tkinter import messagebox, ttk
+
+import cv2
+from PIL import Image, ImageTk
+from pyzbar.pyzbar import decode
+
+try:
+    import qrcode
+except Exception:  # optional dependency
+    qrcode = None
+
+import firebase_admin
+from firebase_admin import credentials, db
+
+try:
+    from picamera2 import Picamera2
+except ImportError as exc:
+    raise SystemExit(
+        "Picamera2 is not installed. Install it with:\n"
+        "sudo apt install -y python3-picamera2"
+    ) from exc
+
+
+# ========= Firebase / network config =========
+FIREBASE_DB_URL = "https://sasta-dmart-default-rtdb.asia-southeast1.firebasedatabase.app"
+SERVICE_ACCOUNT_PATH = os.getenv(
+    "FIREBASE_SERVICE_ACCOUNT_PATH",
+    r"C:\Users\param\Downloads\sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
+)
+LAPTOP_PORTAL_BASE = os.getenv("LAPTOP_PORTAL_BASE", "http://krato-omen:5000")
+
+# ========= UI / scanner config =========
+WINDOW_TITLE = "Sasta Dmart Smart Checkout"
+SCAN_COOLDOWN_SECONDS = 1.5
+LOGIN_SESSION_TTL_SECONDS = 240
+
+# Product ID -> Name
+PRODUCT_LOOKUP = {
+    "00001": "Apple",
+    "00002": "Banana",
+    "00003": "Orange",
+}
+
+THEMES = {
+    "dark": {
+        "bg": "#0f172a",
+        "panel": "#111827",
+        "card": "#1f2937",
+        "fg": "#f9fafb",
+        "subtle": "#9ca3af",
+        "primary": "#2563eb",
+        "success": "#16a34a",
+        "warn": "#f59e0b",
+        "danger": "#dc2626",
+    },
+    "light": {
+        "bg": "#f3f4f6",
+        "panel": "#ffffff",
+        "card": "#f8fafc",
+        "fg": "#111827",
+        "subtle": "#374151",
+        "primary": "#2563eb",
+        "success": "#16a34a",
+        "warn": "#d97706",
+        "danger": "#dc2626",
+    },
+}
+
+
+class SelfCheckoutFirebaseApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title(WINDOW_TITLE)
+        self.root.geometry("1280x760")
+        self.root.protocol("WM_DELETE_WINDOW", self.on_exit)
+
+        self.theme_name = "dark"
+
+        self.scanning_requested = False
+        self.last_scan_time = 0.0
+        self.current_frame = None
+        self.cart = {}
+
+        self.session_mode = None
+        self.login_token = None
+        self.logged_in_user = None
+        self.poll_job = None
+
+        self._init_firebase()
+        self._setup_styles()
+        self._build_ui()
+        self._setup_camera()
+
+        self.set_status("Choose Anonymous or Login Session to begin checkout.")
+        self.update_video_frame()
+
+    def _init_firebase(self):
+        if not firebase_admin._apps:
+            cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
+            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+
+    def _setup_styles(self):
+        self.style = ttk.Style()
+        try:
+            self.style.theme_use("clam")
+        except Exception:
+            pass
+        self._apply_theme()
+
+    def _apply_theme(self):
+        t = THEMES[self.theme_name]
+        self.root.configure(bg=t["bg"])
+        self.style.configure(
+            "Treeview",
+            background=t["panel"],
+            foreground=t["fg"],
+            fieldbackground=t["panel"],
+            rowheight=30,
+            borderwidth=0,
+        )
+        self.style.configure("Treeview.Heading", background=t["card"], foreground=t["fg"])
+
+    def _build_ui(self):
+        t = THEMES[self.theme_name]
+        self.container = tk.Frame(self.root, bg=t["bg"])
+        self.container.pack(fill="both", expand=True, padx=16, pady=16)
+
+        self.left = tk.Frame(self.container, bg=t["bg"])
+        self.left.pack(side="left", fill="both", expand=True)
+
+        self.right = tk.Frame(self.container, bg=t["bg"], width=420)
+        self.right.pack(side="right", fill="y", padx=(16, 0))
+        self.right.pack_propagate(False)
+
+        self.header = tk.Frame(self.left, bg=t["bg"])
+        self.header.pack(fill="x", pady=(0, 8))
+
+        tk.Label(
+            self.header,
+            text="🛒 Sasta Dmart Smart Checkout",
+            font=("Segoe UI", 20, "bold"),
+            bg=t["bg"],
+            fg=t["fg"],
+        ).pack(side="left")
+
+        self.theme_btn = tk.Button(
+            self.header,
+            text="Toggle Theme",
+            command=self.toggle_theme,
+            bg=t["card"],
+            fg=t["fg"],
+            relief="flat",
+            padx=12,
+            pady=8,
+        )
+        self.theme_btn.pack(side="right")
+
+        self.camera_label = tk.Label(self.left, bg="black", relief="flat", bd=0)
+        self.camera_label.pack(fill="both", expand=True)
+
+        self.status_var = tk.StringVar(value="Starting...")
+        self.status_label = tk.Label(
+            self.left,
+            textvariable=self.status_var,
+            font=("Segoe UI", 11),
+            bg=t["bg"],
+            fg=t["subtle"],
+            anchor="w",
+        )
+        self.status_label.pack(fill="x", pady=(8, 0))
+
+        self._build_right_panel()
+
+    def _build_right_panel(self):
+        t = THEMES[self.theme_name]
+        for child in self.right.winfo_children():
+            child.destroy()
+
+        session_card = tk.Frame(self.right, bg=t["panel"], padx=12, pady=12)
+        session_card.pack(fill="x", pady=(0, 12))
+        tk.Label(session_card, text="Session", bg=t["panel"], fg=t["fg"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
+
+        tk.Button(session_card, text="Anonymous", command=self.start_anonymous_session, bg=t["warn"], fg="black", relief="flat", pady=8).pack(fill="x", pady=(10, 6))
+        tk.Button(session_card, text="Login via Phone", command=self.start_login_session, bg=t["primary"], fg="white", relief="flat", pady=8).pack(fill="x")
+
+        self.session_info_var = tk.StringVar(value="No session")
+        tk.Label(session_card, textvariable=self.session_info_var, bg=t["panel"], fg=t["subtle"], justify="left", wraplength=350).pack(anchor="w", pady=(10, 0))
+
+        self.qr_label = tk.Label(session_card, bg=t["panel"])
+        self.qr_label.pack(anchor="center", pady=(10, 0))
+
+        action_card = tk.Frame(self.right, bg=t["panel"], padx=12, pady=12)
+        action_card.pack(fill="x", pady=(0, 12))
+        tk.Label(action_card, text="Actions", bg=t["panel"], fg=t["fg"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
+
+        tk.Button(action_card, text="Scan Item", command=self.scan_next_item, bg=t["primary"], fg="white", relief="flat", pady=8).pack(fill="x", pady=(10, 6))
+        tk.Button(action_card, text="Generate Bill", command=self.generate_bill, bg=t["success"], fg="white", relief="flat", pady=8).pack(fill="x", pady=6)
+        tk.Button(action_card, text="Clear Cart", command=self.clear_cart, bg=t["warn"], fg="black", relief="flat", pady=8).pack(fill="x", pady=6)
+        tk.Button(action_card, text="Exit", command=self.on_exit, bg=t["danger"], fg="white", relief="flat", pady=8).pack(fill="x", pady=6)
+
+        cart_card = tk.Frame(self.right, bg=t["panel"], padx=12, pady=12)
+        cart_card.pack(fill="both", expand=True)
+        tk.Label(cart_card, text="Cart", bg=t["panel"], fg=t["fg"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
+
+        columns = ("name", "qty", "price", "line_total")
+        self.cart_tree = ttk.Treeview(cart_card, columns=columns, show="headings", height=10)
+        self.cart_tree.heading("name", text="Item")
+        self.cart_tree.heading("qty", text="Qty")
+        self.cart_tree.heading("price", text="Unit ₹")
+        self.cart_tree.heading("line_total", text="Total ₹")
+        self.cart_tree.column("name", width=120, anchor="w")
+        self.cart_tree.column("qty", width=45, anchor="center")
+        self.cart_tree.column("price", width=80, anchor="e")
+        self.cart_tree.column("line_total", width=90, anchor="e")
+        self.cart_tree.pack(fill="both", expand=True, pady=(10, 0))
+
+        self.total_var = tk.StringVar(value="Cart Total: ₹ 0.00")
+        tk.Label(cart_card, textvariable=self.total_var, bg=t["panel"], fg=t["fg"], font=("Segoe UI", 13, "bold")).pack(anchor="e", pady=(10, 0))
+
+    def toggle_theme(self):
+        self.theme_name = "light" if self.theme_name == "dark" else "dark"
+        self._apply_theme()
+        self.container.destroy()
+        self._build_ui()
+        self.refresh_cart_view()
+
+    def _setup_camera(self):
+        self.picam2 = Picamera2()
+        config = self.picam2.create_preview_configuration(main={"size": (960, 540), "format": "RGB888"})
+        self.picam2.configure(config)
+        self.picam2.start()
+        time.sleep(0.4)
+
+    def update_video_frame(self):
+        frame = self.picam2.capture_array()
+        display_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        if self.scanning_requested and time.time() - self.last_scan_time >= SCAN_COOLDOWN_SECONDS:
+            decoded = self._decode_barcodes(display_frame)
+            if decoded:
+                if self._handle_decoded_barcode(decoded[0]):
+                    self.scanning_requested = False
+                    self.last_scan_time = time.time()
+
+        if self.scanning_requested:
+            cv2.putText(display_frame, "Scanning... show one barcode", (18, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 50, 60), 2)
+
+        img = Image.fromarray(display_frame)
+        imgtk = ImageTk.PhotoImage(image=img)
+        self.camera_label.imgtk = imgtk
+        self.camera_label.configure(image=imgtk)
+        self.root.after(30, self.update_video_frame)
+
+    def _decode_barcodes(self, frame_rgb):
+        gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
+        return decode(gray)
+
+    def _handle_decoded_barcode(self, barcode_obj):
+        try:
+            barcode_data = barcode_obj.data.decode("utf-8")
+        except Exception:
+            self.set_status("Could not decode barcode bytes.")
+            return False
+
+        if not (barcode_data.startswith("27") and len(barcode_data) >= 13):
+            self.set_status(f"Unsupported barcode format: {barcode_data}")
+            return False
+
+        product_id = barcode_data[2:7]
+        price_paise = barcode_data[7:12]
+        try:
+            unit_price = int(price_paise) / 100.0
+        except ValueError:
+            self.set_status(f"Invalid price in barcode: {barcode_data}")
+            return False
+
+        product_name = PRODUCT_LOOKUP.get(product_id, f"Unknown ({product_id})")
+        cart_key = f"{product_id}_{price_paise}"
+        if cart_key not in self.cart:
+            self.cart[cart_key] = {
+                "product_id": product_id,
+                "name": product_name,
+                "qty": 0,
+                "unit_price": unit_price,
+                "barcode": barcode_data,
+            }
+        self.cart[cart_key]["qty"] += 1
+        self.refresh_cart_view()
+        self.set_status(f"Added {product_name} - ₹ {unit_price:.2f}")
+        return True
+
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    def scan_next_item(self):
+        if not self.session_mode:
+            messagebox.showwarning("Session required", "Start Anonymous or Login Session first.")
+            return
+        self.scanning_requested = True
+        self.set_status("Scanning armed. Show one barcode to the camera.")
+
+    def start_anonymous_session(self):
+        self._cleanup_login_poll()
+        self.session_mode = "anonymous"
+        self.login_token = None
+        self.logged_in_user = None
+        self.qr_label.configure(image="")
+        self.session_info_var.set("Anonymous session active")
+        self.set_status("Anonymous session started.")
+
+    def start_login_session(self):
+        self._cleanup_login_poll()
+        self.session_mode = "login_pending"
+        self.logged_in_user = None
+
+        token = uuid.uuid4().hex
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=LOGIN_SESSION_TTL_SECONDS)).isoformat()
+        payload = {
+            "status": "pending",
+            "claimed": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": expires_at,
+            "claimed_by": None,
+        }
+        db.reference(f"login_sessions/{token}").set(payload)
+        self.login_token = token
+
+        login_url = f"{LAPTOP_PORTAL_BASE}/?token={token}"
+        self.session_info_var.set(
+            "Login pending. Scan QR with phone camera and sign in with Google.\n"
+            f"Link: {login_url}"
+        )
+        self._render_qr(login_url)
+        self.set_status("Waiting for user to login from phone...")
+        self._poll_login_status()
+
+    def _render_qr(self, text):
+        if not qrcode:
+            self.qr_label.configure(text="Install qrcode package for QR rendering", fg="orange")
+            return
+
+        qr_img = qrcode.make(text).resize((210, 210))
+        tk_img = ImageTk.PhotoImage(qr_img)
+        self.qr_label.qr_tk_img = tk_img
+        self.qr_label.configure(image=tk_img)
+
+    def _poll_login_status(self):
+        if not self.login_token:
+            return
+
+        session = db.reference(f"login_sessions/{self.login_token}").get() or {}
+        if session.get("claimed") and session.get("claimed_by"):
+            self.session_mode = "logged_in"
+            self.logged_in_user = session["claimed_by"]
+            name = self.logged_in_user.get("name") or self.logged_in_user.get("email") or "User"
+            self.session_info_var.set(f"Logged in: {name}\nEmail: {self.logged_in_user.get('email', '-')}")
+            self.set_status("Login successful. You can scan items now.")
+            return
+
+        if session.get("status") == "expired":
+            self.session_mode = None
+            self.login_token = None
+            self.session_info_var.set("Login session expired. Start login again.")
+            self.set_status("Login expired.")
+            return
+
+        self.poll_job = self.root.after(1500, self._poll_login_status)
+
+    def _cleanup_login_poll(self):
+        if self.poll_job:
+            self.root.after_cancel(self.poll_job)
+            self.poll_job = None
+
+    def refresh_cart_view(self):
+        for row in self.cart_tree.get_children():
+            self.cart_tree.delete(row)
+
+        total = 0.0
+        for item in self.cart.values():
+            line_total = item["qty"] * item["unit_price"]
+            total += line_total
+            self.cart_tree.insert("", "end", values=(item["name"], item["qty"], f"{item['unit_price']:.2f}", f"{line_total:.2f}"))
+
+        self.total_var.set(f"Cart Total: ₹ {total:.2f}")
+
+    def clear_cart(self):
+        if not self.cart:
+            return
+        if messagebox.askyesno("Clear Cart", "Remove all items from the cart?"):
+            self.cart.clear()
+            self.refresh_cart_view()
+            self.set_status("Cart cleared.")
+
+    def generate_bill(self):
+        if not self.session_mode or self.session_mode == "login_pending":
+            messagebox.showwarning("Session not ready", "Start an Anonymous session or finish login first.")
+            return
+        if not self.cart:
+            messagebox.showwarning("Empty cart", "Scan at least one item before generating bill.")
+            return
+
+        items = []
+        total = 0.0
+        for item in self.cart.values():
+            line_total = item["qty"] * item["unit_price"]
+            total += line_total
+            items.append(
+                {
+                    "product_id": item["product_id"],
+                    "name": item["name"],
+                    "qty": item["qty"],
+                    "unit_price": round(item["unit_price"], 2),
+                    "line_total": round(line_total, 2),
+                    "barcode": item["barcode"],
+                }
+            )
+
+        payload = {
+            "bill_id": f"BILL-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6].upper()}",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "session_type": "logged_in" if self.session_mode == "logged_in" else "anonymous",
+            "customer": self.logged_in_user if self.logged_in_user else {"name": "Anonymous", "uid": None, "email": None},
+            "items": items,
+            "total": round(total, 2),
+            "pi_node": os.getenv("PI_NODE_NAME", "param"),
+        }
+
+        db.reference("transactions").push(payload)
+        self.set_status(f"Saved transaction {payload['bill_id']} to Firebase")
+        messagebox.showinfo("Bill generated", f"Saved in Firebase:\n{payload['bill_id']}")
+
+        if self.login_token:
+            db.reference(f"login_sessions/{self.login_token}").update(
+                {
+                    "status": "closed",
+                    "closed_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+        self.cart.clear()
+        self.refresh_cart_view()
+        self.session_mode = None
+        self.login_token = None
+        self.logged_in_user = None
+        self.session_info_var.set("No session")
+        self.qr_label.configure(image="")
+
+    def on_exit(self):
+        self._cleanup_login_poll()
+        try:
+            self.picam2.stop()
+        except Exception:
+            pass
+        self.root.destroy()
+
+
+def main():
+    root = tk.Tk()
+    SelfCheckoutFirebaseApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,101 +1,63 @@
-# Self Checkout Demo Baseline
+# Sasta Dmart Firebase v2 (Pi + Laptop Portal)
 
-This zip contains:
+This repo now uses **Firebase Realtime Database + Google login** with these deliverables as plain files:
 
-- `pi_checkout_gui.py` -> Raspberry Pi GUI app
-- `laptop_bill_server.py` -> Laptop Flask server that displays bills in a webpage
+- `pi_checkout_gui_firebase.py` (Pi cart UI + QR login terminal)
+- `laptop_firebase_portal.py` (Laptop Flask portal + phone Google sign-in + transactions dashboard)
 
-## Flow
+## Architecture
 
-1. Run the laptop server.
-2. Open the laptop webpage in a browser.
-3. Run the Pi GUI.
-4. Click **Scan Item** on the Pi.
-5. Show a barcode to the Pi Camera.
-6. Click **Generate Bill** on the Pi.
-7. The laptop webpage updates with the bill.
+1. Pi starts checkout and supports:
+   - anonymous session, or
+   - logged-in session (QR flow)
+2. For logged-in session, Pi creates one-time token in Firebase and shows QR.
+3. Phone scans QR and opens laptop portal URL (`krato-omen:5000`) on Tailscale.
+4. Phone user signs in with Google using Firebase Auth and claims token.
+5. Pi detects claimed token and marks session as logged-in.
+6. Pi generates bill and writes transaction to Firebase.
+7. Laptop portal lists all transactions.
 
----
+## Pre-filled config
 
-## 1) Laptop setup
+These values are already set in both scripts:
 
-Install dependencies:
+- RTDB URL: `https://sasta-dmart-default-rtdb.asia-southeast1.firebasedatabase.app`
+- Laptop base URL: `http://krato-omen:5000`
+- Firebase web app config (apiKey/authDomain/projectId/etc)
 
-```bash
-pip install flask
-```
+Service account path defaults to:
 
-Run:
+`C:\Users\param\Downloads\sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json`
 
-```bash
-python laptop_bill_server.py
-```
-
-Open in browser on the laptop:
-
-```text
-http://127.0.0.1:5000
-```
-
-Also find the laptop Tailscale IP:
+You should override it on each machine with env var:
 
 ```bash
-tailscale ip -4
+export FIREBASE_SERVICE_ACCOUNT_PATH="/path/to/your-service-account.json"
 ```
 
-Copy that IP.
+## Dependencies
 
----
+No npm/Next.js is required for this version.
 
-## 2) Pi setup
+### Laptop
 
-Edit this line inside `pi_checkout_gui.py`:
-
-```python
-LAPTOP_BILL_ENDPOINT = "http://100.100.100.100:5000/api/bills"
+```bash
+pip install flask firebase-admin
+python laptop_firebase_portal.py
 ```
 
-Replace `100.100.100.100` with your laptop's real Tailscale IP.
-
-Install dependencies on the Pi:
+### Pi
 
 ```bash
 sudo apt update
-sudo apt install -y python3-picamera2 python3-tk python3-pil python3-pil.imagetk python3-opencv python3-requests python3-pyzbar libzbar0
+sudo apt install -y python3-picamera2 python3-tk python3-pil python3-pil.imagetk python3-opencv python3-pyzbar libzbar0
+pip install firebase-admin qrcode[pil]
+python3 pi_checkout_gui_firebase.py
 ```
 
-Run:
+## Firebase checklist
 
-```bash
-python3 pi_checkout_gui.py
-```
+- Authentication -> Sign-in method -> **Google enabled**
+- Authentication -> Settings -> **Authorized domains** include hostname used on phone (for you: `krato-omen` if accepted, otherwise use a proper domain)
+- Realtime Database rules allow the service account writes/reads
 
----
-
-## Barcode format expected
-
-The Pi script expects barcodes in this format:
-
-- `27` -> custom prefix
-- next 5 digits -> product ID
-- next 5 digits -> price in paise
-- final digit -> EAN checksum
-
-Example decoded barcode:
-
-```text
-2700001060008
-```
-
-Which means:
-- product ID = `00001`
-- price = `06000` paise = ₹60.00
-
----
-
-## Notes
-
-- If you want to change product names, edit `PRODUCT_LOOKUP` in `pi_checkout_gui.py`.
-- The Pi GUI aggregates duplicate scans by quantity.
-- After a successful bill send, the Pi cart is cleared for the next run.
-- The laptop server stores received bills in `received_bills.json`.
