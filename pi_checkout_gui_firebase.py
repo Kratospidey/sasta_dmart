@@ -42,7 +42,7 @@ SERVICE_ACCOUNT_PATH = os.getenv(
     "FIREBASE_SERVICE_ACCOUNT_PATH",
     r"C:\Users\param\Downloads\sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
 )
-LAPTOP_PORTAL_BASE = os.getenv("LAPTOP_PORTAL_BASE", "http://krato-omen:5000")
+LAPTOP_PORTAL_BASE = os.getenv("LAPTOP_PORTAL_BASE", "").strip()
 
 # ========= UI / scanner config =========
 WINDOW_TITLE = "Sasta Dmart Smart Checkout"
@@ -340,7 +340,8 @@ class SelfCheckoutFirebaseApp:
         db.reference(f"login_sessions/{token}").set(payload)
         self.login_token = token
 
-        login_url = f"{LAPTOP_PORTAL_BASE}/?token={token}"
+        base_url = self._resolve_portal_base_url()
+        login_url = f"{base_url}/?token={token}"
         self.session_info_var.set(
             "Login pending. Scan QR with phone camera and sign in with Google.\n"
             f"Link: {login_url}"
@@ -348,6 +349,17 @@ class SelfCheckoutFirebaseApp:
         self._render_qr(login_url)
         self.set_status("Waiting for user to login from phone...")
         self._poll_login_status()
+
+    def _resolve_portal_base_url(self):
+        if LAPTOP_PORTAL_BASE:
+            return LAPTOP_PORTAL_BASE.rstrip("/")
+
+        portal_cfg = db.reference("portal_config").get() or {}
+        for url in portal_cfg.get("candidate_urls", []):
+            if isinstance(url, str) and url.startswith("http"):
+                return url.rstrip("/")
+
+        return "http://krato-omen:5000"
 
     def _render_qr(self, text):
         if not qrcode:
