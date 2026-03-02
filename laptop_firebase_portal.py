@@ -7,6 +7,8 @@ Laptop Firebase portal.
 """
 
 import os
+import socket
+import subprocess
 from datetime import datetime, timezone
 
 import firebase_admin
@@ -35,6 +37,58 @@ FIREBASE_WEB_CONFIG = {
 if not firebase_admin._apps:
     cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
     firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+
+
+def _detect_tailscale_ipv4():
+    try:
+        out = subprocess.check_output(["tailscale", "ip", "-4"], text=True, timeout=2).strip()
+    except Exception:
+        return None
+
+    for line in out.splitlines():
+        value = line.strip()
+        if value:
+            return value
+    return None
+
+
+def _portal_info():
+    configured_base = os.getenv("LAPTOP_PORTAL_BASE", "http://krato-omen:5000").rstrip("/")
+    hostname = socket.gethostname().lower()
+    tailscale_ip = _detect_tailscale_ipv4()
+
+    candidates = [configured_base]
+    if tailscale_ip:
+        candidates.append(f"http://{tailscale_ip}:5000")
+    if hostname:
+        candidates.append(f"http://{hostname}:5000")
+
+    deduped = []
+    seen = set()
+    for url in candidates:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+
+    return {
+        "configured_base": configured_base,
+        "tailscale_ip": tailscale_ip,
+        "hostname": hostname,
+        "candidate_urls": deduped,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def _publish_portal_info():
+    info = _portal_info()
+    try:
+        db.reference("portal_config").set(info)
+    except Exception:
+        pass
+    return info
+
+
+PORTAL_INFO = _publish_portal_info()
 
 INDEX_HTML = """
 <!doctype html>
@@ -93,7 +147,7 @@ INDEX_HTML = """
 </script>
 <script type="module">
   import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js';
-  import { getAuth, GoogleAuthProvider, signInWithPopup } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
+  import { getAuth, GoogleAuthProvider, getRedirectResult, signInWithPopup, signInWithRedirect } from 'https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js';
 
   const app = initializeApp(window.FIREBASE_WEB_CONFIG);
   const fbAuth = getAuth(app);
@@ -111,14 +165,33 @@ INDEX_HTML = """
 
   if (token) claimText.textContent = `Session token detected: ${token.slice(0,10)}...`;
 
+  async function postSignIn(user) {
+    idToken = await user.getIdToken(true);
+    claimStatus.textContent = `Signed in as ${user.email}`;
+    claimStatus.style.color = '#22c55e';
+    claimBtn.disabled = !token;
+  }
+
+  try {
+    const redirectResult = await getRedirectResult(fbAuth);
+    if (redirectResult && redirectResult.user) {
+      await postSignIn(redirectResult.user);
+    }
+  } catch (err) {
+    claimStatus.textContent = `Redirect sign-in failed: ${err.message}`;
+    claimStatus.style.color = '#ef4444';
+  }
+
   googleBtn.onclick = async () => {
     try {
       const result = await signInWithPopup(fbAuth, provider);
-      idToken = await result.user.getIdToken(true);
-      claimStatus.textContent = `Signed in as ${result.user.email}`;
-      claimStatus.style.color = '#22c55e';
-      claimBtn.disabled = !token;
+      await postSignIn(result.user);
     } catch (err) {
+      const code = err && err.code ? String(err.code) : '';
+      if (code.includes('popup') || code.includes('operation-not-supported')) {
+        await signInWithRedirect(fbAuth, provider);
+        return;
+      }
       claimStatus.textContent = `Sign-in failed: ${err.message}`;
       claimStatus.style.color = '#ef4444';
     }
@@ -201,6 +274,18 @@ def api_transactions():
     transactions = db.reference("transactions").get() or {}
     rows = sorted((v for _, v in transactions.items()), key=lambda x: x.get("generated_at", ""), reverse=True)
     return jsonify({"ok": True, "transactions": rows})
+
+
+@app.get("/api/all-bills")
+def api_all_bills_compat():
+    transactions = db.reference("transactions").get() or {}
+    rows = sorted((v for _, v in transactions.items()), key=lambda x: x.get("generated_at", ""), reverse=True)
+    return jsonify({"ok": True, "bills": rows})
+
+
+@app.get("/api/portal-info")
+def api_portal_info():
+    return jsonify({"ok": True, "portal": PORTAL_INFO})
 
 
 if __name__ == "__main__":
