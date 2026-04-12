@@ -1,6 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAuth, GoogleAuthProvider, getRedirectResult, signInWithPopup, signInWithRedirect } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getDatabase, get, ref, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+import { isClaimable, isExpiredSession, shouldEnableClaimButton } from "./claim_state.mjs";
 
 
 const config = window.PUBLIC_CLAIM_CONFIG;
@@ -24,6 +25,7 @@ const claimBtn = document.getElementById("claimBtn");
 
 let currentUser = null;
 let latestSession = null;
+let isClaimInFlight = false;
 
 
 function setPanel(message, variant = "idle") {
@@ -37,134 +39,132 @@ function setSessionBadge(message) {
 }
 
 
-function isExpired(expiresAt) {
-  if (!expiresAt) {
-    return true;
-  }
-  return new Date(expiresAt).getTime() < Date.now();
-}
-
-
-function isExpiredSession(session) {
-  if (!session) {
-    return true;
-  }
-  if (typeof session.expires_at_ms === "number") {
-    return session.expires_at_ms < Date.now();
-  }
-  return isExpired(session.expires_at);
-}
-
-
-function isClaimable(session) {
-  return Boolean(
-    session &&
-    session.status === "pending" &&
-    !session.claimed_by &&
-    !isExpiredSession(session)
-  );
+function syncClaimButtonState() {
+  claimBtn.disabled = !shouldEnableClaimButton({
+    token,
+    currentUser,
+    session: latestSession,
+    isClaimInFlight,
+  });
 }
 
 
 async function loadSession() {
-  if (!token) {
-    tokenText.textContent = "Missing token";
-    setSessionBadge("Invalid link");
-    statusText.textContent = "No token in URL";
-    setPanel("This link is missing a session token. Scan the QR code again from the Pi.", "error");
-    return null;
-  }
+  latestSession = null;
 
-  const snapshot = await get(ref(database, `login_sessions/${token}`));
-  latestSession = snapshot.val();
+  try {
+    if (!token) {
+      tokenText.textContent = "Missing token";
+      setSessionBadge("Invalid link");
+      statusText.textContent = "No token in URL";
+      setPanel("This link is missing a session token. Scan the QR code again from the Pi.", "error");
+      return null;
+    }
 
-  if (!latestSession) {
-    setSessionBadge("Not found");
-    statusText.textContent = "Session not found";
-    setPanel("This session token no longer exists. Start a new login session on the Pi.", "error");
-    return null;
-  }
+    const snapshot = await get(ref(database, `login_sessions/${token}`));
+    latestSession = snapshot.val();
 
-  if (latestSession.status === "claimed" || latestSession.status === "closed") {
-    setSessionBadge("Already used");
-    statusText.textContent = "Session already claimed";
-    setPanel("This session has already been claimed. Return to the Pi and start a fresh login flow if needed.", "error");
+    if (!latestSession) {
+      setSessionBadge("Not found");
+      statusText.textContent = "Session not found";
+      setPanel("This session token no longer exists. Start a new login session on the Pi.", "error");
+      return null;
+    }
+
+    if (latestSession.status === "claimed" || latestSession.status === "closed") {
+      setSessionBadge("Already used");
+      statusText.textContent = "Session already claimed";
+      setPanel("This session has already been claimed. Return to the Pi and start a fresh login flow if needed.", "error");
+      return latestSession;
+    }
+
+    if (latestSession.status === "expired" || isExpiredSession(latestSession)) {
+      setSessionBadge("Expired");
+      statusText.textContent = "Session expired";
+      setPanel("This session has expired. Return to the Pi and create a new login session.", "error");
+      return latestSession;
+    }
+
+    setSessionBadge("Ready");
+    statusText.textContent = "Session is claimable";
+    setPanel("Session is valid. Sign in with Google, then claim it once.", "idle");
     return latestSession;
+  } finally {
+    syncClaimButtonState();
   }
-
-  if (latestSession.status === "expired" || isExpiredSession(latestSession)) {
-    setSessionBadge("Expired");
-    statusText.textContent = "Session expired";
-    setPanel("This session has expired. Return to the Pi and create a new login session.", "error");
-    return latestSession;
-  }
-
-  setSessionBadge("Ready");
-  statusText.textContent = "Session is claimable";
-  setPanel("Session is valid. Sign in with Google, then claim it once.", "idle");
-  return latestSession;
 }
 
 
 function updateUser(user) {
   currentUser = user;
   userText.textContent = user ? (user.email || user.displayName || "Signed in") : "Not signed in";
-  claimBtn.disabled = !(user && isClaimable(latestSession));
+  syncClaimButtonState();
 }
 
 
 async function tryClaim() {
-  if (!currentUser || !token) {
+  if (!shouldEnableClaimButton({
+    token,
+    currentUser,
+    session: latestSession,
+    isClaimInFlight,
+  })) {
     return;
   }
+
+  isClaimInFlight = true;
+  syncClaimButtonState();
 
   const sessionRef = ref(database, `login_sessions/${token}`);
   let blockedReason = "Session is no longer claimable.";
 
-  const result = await runTransaction(sessionRef, (current) => {
-    if (!current) {
-      blockedReason = "This session no longer exists.";
-      return;
-    }
-    if (current.status !== "pending") {
-      blockedReason = `This session is ${current.status}.`;
-      return;
-    }
-    if (current.claimed_by) {
-      blockedReason = "This session has already been claimed.";
-      return;
-    }
-    if (isExpired(current.expires_at)) {
-      blockedReason = "This session has expired.";
+  try {
+    const result = await runTransaction(sessionRef, (current) => {
+      if (!current) {
+        blockedReason = "This session no longer exists.";
+        return;
+      }
+      if (current.status !== "pending") {
+        blockedReason = `This session is ${current.status}.`;
+        return;
+      }
+      if (current.claimed_by) {
+        blockedReason = "This session has already been claimed.";
+        return;
+      }
+      if (isExpiredSession(current)) {
+        blockedReason = "This session has expired.";
+        return;
+      }
+
+      return {
+        ...current,
+        status: "claimed",
+        claimed_by: {
+          uid: currentUser.uid,
+          email: currentUser.email || null,
+          name: currentUser.displayName || null,
+        },
+        claimed_at: new Date().toISOString(),
+      };
+    });
+
+    if (!result.committed) {
+      setSessionBadge("Rejected");
+      statusText.textContent = blockedReason;
+      setPanel(blockedReason, "error");
+      latestSession = result.snapshot?.val() || null;
       return;
     }
 
-    return {
-      ...current,
-      status: "claimed",
-      claimed_by: {
-        uid: currentUser.uid,
-        email: currentUser.email || null,
-        name: currentUser.displayName || null,
-      },
-      claimed_at: new Date().toISOString(),
-    };
-  });
-
-  if (!result.committed) {
-    setSessionBadge("Rejected");
-    statusText.textContent = blockedReason;
-    setPanel(blockedReason, "error");
-    latestSession = result.snapshot?.val() || latestSession;
-    claimBtn.disabled = true;
-    return;
+    latestSession = result.snapshot.val();
+    setSessionBadge("Claimed");
+    statusText.textContent = "Session attached successfully";
+    setPanel("Checkout session claimed successfully. You can return to the Pi now.", "success");
+  } finally {
+    isClaimInFlight = false;
+    syncClaimButtonState();
   }
-
-  latestSession = result.snapshot.val();
-  setSessionBadge("Claimed");
-  statusText.textContent = "Session attached successfully";
-  setPanel("Checkout session claimed successfully. You can return to the Pi now.", "success");
-  claimBtn.disabled = true;
 }
 
 
@@ -180,6 +180,26 @@ async function handleRedirectResult() {
     setPanel(`Google sign-in failed: ${error.message}`, "error");
   }
 }
+
+
+onAuthStateChanged(auth, async (user) => {
+  updateUser(user);
+
+  if (!user || !token) {
+    return;
+  }
+
+  try {
+    await loadSession();
+    if (isClaimable(latestSession)) {
+      setPanel("Signed in successfully. You can claim the session now.", "idle");
+    }
+  } catch (error) {
+    setSessionBadge("Error");
+    statusText.textContent = "Could not verify session";
+    setPanel(`Could not load this session: ${error.message}`, "error");
+  }
+});
 
 
 signInBtn.addEventListener("click", async () => {
@@ -204,6 +224,7 @@ claimBtn.addEventListener("click", async () => {
     await tryClaim();
   } catch (error) {
     setPanel(`Claim failed: ${error.message}`, "error");
+    syncClaimButtonState();
   }
 });
 
@@ -221,10 +242,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     setPanel("Sign in with Google to verify and claim this checkout session.", "idle");
 
     await handleRedirectResult();
-    claimBtn.disabled = !(currentUser && isClaimable(latestSession));
+    syncClaimButtonState();
   } catch (error) {
     setSessionBadge("Error");
     statusText.textContent = "Could not verify session";
     setPanel(`Could not load this session: ${error.message}`, "error");
+    syncClaimButtonState();
   }
 });
