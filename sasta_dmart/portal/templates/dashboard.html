@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+
+{% block title %}Retail Ledger | Sasta Dmart{% endblock %}
+
+{% block body %}
+<main class="shell" data-dashboard>
+  <section class="hero card lift">
+    <div class="hero-copy">
+      <p class="eyebrow">Sasta Dmart</p>
+      <h1>Retail Ledger</h1>
+      <p class="subtitle">
+        Local operator dashboard for live transactions and session diagnostics.
+        Phone sign-in now belongs to the public claim surface, not this portal.
+      </p>
+    </div>
+    <div class="hero-meta">
+      <span class="pill pill-dark">Tailscale dashboard</span>
+      <span class="pill pill-gold">Premium demo mode</span>
+    </div>
+  </section>
+
+  <section class="metrics">
+    <article class="metric card lift">
+      <span class="label">Transactions loaded</span>
+      <strong class="metric-value" data-stat="count">{{ transactions|length }}</strong>
+    </article>
+    <article class="metric card lift">
+      <span class="label">Signed-in share</span>
+      <strong class="metric-value" data-stat="signed-in">
+        {% set signed_in = transactions | selectattr('session_type', 'equalto', 'logged_in') | list | length %}
+        {% if transactions|length %}{{ ((signed_in / (transactions|length)) * 100) | round(0) | int }}%{% else %}0%{% endif %}
+      </strong>
+    </article>
+    <article class="metric card metric-accent">
+      <span class="label">Canonical claim URL</span>
+      <strong class="metric-value metric-url">{{ portal_info.public_claim_base_url }}</strong>
+    </article>
+  </section>
+
+  <section class="grid">
+    <article class="card panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Portal role</p>
+          <h2>Session surfaces</h2>
+        </div>
+      </div>
+      <div class="surface-list">
+        <div class="surface-row">
+          <span class="surface-label">Laptop dashboard</span>
+          <span class="surface-value">{{ portal_info.dashboard_url }}</span>
+        </div>
+        <div class="surface-row">
+          <span class="surface-label">Public claim URL</span>
+          <span class="surface-value">{{ portal_info.public_claim_base_url }}</span>
+        </div>
+        <div class="surface-row">
+          <span class="surface-label">Hostname</span>
+          <span class="surface-value">{{ portal_info.hostname or 'Unavailable' }}</span>
+        </div>
+        <div class="surface-row">
+          <span class="surface-label">Tailscale IPv4</span>
+          <span class="surface-value">{{ portal_info.tailscale_ip or 'Unavailable' }}</span>
+        </div>
+      </div>
+    </article>
+
+    <article class="card panel">
+      <div class="panel-head">
+        <div>
+          <p class="eyebrow">Operator note</p>
+          <h2>Auth boundary</h2>
+        </div>
+      </div>
+      <p class="body-copy">
+        QR claims should always open the public HTTPS claim page. If a phone ends up here for sign-in, the deployment is misconfigured.
+      </p>
+      <div class="note-rail">
+        <span class="dot"></span>
+        <span>This portal is for monitoring, not for phone sign-in.</span>
+      </div>
+    </article>
+  </section>
+
+  <section class="card panel table-panel">
+    <div class="panel-head">
+      <div>
+        <p class="eyebrow">Transactions</p>
+        <h2>Recent checkouts</h2>
+      </div>
+      <div class="table-actions">
+        <span class="pill pill-light">Live refresh</span>
+      </div>
+    </div>
+
+    <div class="table-shell">
+      <table>
+        <thead>
+          <tr>
+            <th>Bill</th>
+            <th>Time</th>
+            <th>Session</th>
+            <th>Customer</th>
+            <th>Pi Node</th>
+            <th class="align-right">Total</th>
+          </tr>
+        </thead>
+        <tbody id="txBody">
+          {% if transactions %}
+            {% for tx in transactions %}
+              <tr class="fade-row">
+                <td><strong>{{ tx.bill_id }}</strong></td>
+                <td>{{ tx.generated_at }}</td>
+                <td><span class="badge {{ 'badge-gold' if tx.session_type == 'logged_in' else 'badge-green' }}">{{ tx.session_type }}</span></td>
+                <td>{{ tx.customer.email if tx.customer and tx.customer.email else (tx.customer.name if tx.customer else 'Anonymous') }}</td>
+                <td>{{ tx.pi_node or '-' }}</td>
+                <td class="align-right">₹ {{ '%.2f'|format(tx.total or 0) }}</td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="6">
+                <div class="empty-state">
+                  <p class="empty-title">The ledger is quiet for now.</p>
+                  <p class="empty-copy">Your next checkout will appear here once the Pi writes a transaction.</p>
+                </div>
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+{% endblock %}
