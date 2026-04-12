@@ -26,7 +26,10 @@ from sasta_dmart.sessions import (
     close_session_record,
     expire_session_record,
 )
-from sasta_dmart.transactions import build_transaction_payload
+from sasta_dmart.transactions import (
+    build_transaction_payload,
+    build_transaction_write_map,
+)
 
 try:
     import qrcode
@@ -112,6 +115,11 @@ class SelfCheckoutFirebaseApp:
         self.login_token = None
         self.logged_in_user = None
         self.poll_job = None
+        self.payment_dialog = None
+        self.payment_status_var = None
+        self.payment_cash_btn = None
+        self.payment_card_btn = None
+        self.payment_save_in_flight = False
 
         self._init_firebase()
         self._setup_styles()
@@ -239,7 +247,16 @@ class SelfCheckoutFirebaseApp:
         tk.Label(action_card, text="Actions", bg=t["panel"], fg=t["fg"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
 
         tk.Button(action_card, text="Scan Item", command=self.scan_next_item, bg=t["primary"], fg="white", relief="flat", pady=8).pack(fill="x", pady=(10, 6))
-        tk.Button(action_card, text="Generate Bill", command=self.generate_bill, bg=t["success"], fg="white", relief="flat", pady=8).pack(fill="x", pady=6)
+        self.generate_bill_btn = tk.Button(
+            action_card,
+            text="Generate Bill",
+            command=self.generate_bill,
+            bg=t["success"],
+            fg="white",
+            relief="flat",
+            pady=8,
+        )
+        self.generate_bill_btn.pack(fill="x", pady=6)
         tk.Button(action_card, text="Clear Cart", command=self.clear_cart, bg=t["warn"], fg="black", relief="flat", pady=8).pack(fill="x", pady=6)
         tk.Button(action_card, text="Exit", command=self.on_exit, bg=t["danger"], fg="white", relief="flat", pady=8).pack(fill="x", pady=6)
 
@@ -247,8 +264,11 @@ class SelfCheckoutFirebaseApp:
         cart_card.pack(fill="both", expand=True)
         tk.Label(cart_card, text="Cart", bg=t["panel"], fg=t["fg"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
 
+        cart_shell = tk.Frame(cart_card, bg=t["panel"])
+        cart_shell.pack(fill="both", expand=True, pady=(10, 0))
+
         columns = ("name", "qty", "price", "line_total")
-        self.cart_tree = ttk.Treeview(cart_card, columns=columns, show="headings", height=10)
+        self.cart_tree = ttk.Treeview(cart_shell, columns=columns, show="headings", height=10)
         self.cart_tree.heading("name", text="Item")
         self.cart_tree.heading("qty", text="Qty")
         self.cart_tree.heading("price", text="Unit ₹")
@@ -257,7 +277,14 @@ class SelfCheckoutFirebaseApp:
         self.cart_tree.column("qty", width=45, anchor="center")
         self.cart_tree.column("price", width=80, anchor="e")
         self.cart_tree.column("line_total", width=90, anchor="e")
-        self.cart_tree.pack(fill="both", expand=True, pady=(10, 0))
+        self.cart_tree.pack(side="left", fill="both", expand=True)
+
+        cart_scrollbar = ttk.Scrollbar(cart_shell, orient="vertical", command=self.cart_tree.yview)
+        cart_scrollbar.pack(side="right", fill="y")
+        self.cart_tree.configure(yscrollcommand=cart_scrollbar.set)
+        self.cart_tree.bind("<MouseWheel>", self._on_cart_mousewheel)
+        self.cart_tree.bind("<Button-4>", self._on_cart_mousewheel_linux)
+        self.cart_tree.bind("<Button-5>", self._on_cart_mousewheel_linux)
 
         self.total_var = tk.StringVar(value="Cart Total: ₹ 0.00")
         tk.Label(cart_card, textvariable=self.total_var, bg=t["panel"], fg=t["fg"], font=("Segoe UI", 13, "bold")).pack(anchor="e", pady=(10, 0))
@@ -299,6 +326,18 @@ class SelfCheckoutFirebaseApp:
     def _decode_barcodes(self, frame_rgb):
         gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
         return decode(gray)
+
+    def _on_cart_mousewheel(self, event):
+        if event.delta:
+            self.cart_tree.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
+
+    def _on_cart_mousewheel_linux(self, event):
+        if event.num == 4:
+            self.cart_tree.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.cart_tree.yview_scroll(1, "units")
+        return "break"
 
     def _handle_decoded_barcode(self, barcode_obj):
         try:
@@ -462,6 +501,213 @@ class SelfCheckoutFirebaseApp:
             self.refresh_cart_view()
             self.set_status("Cart cleared.")
 
+    def _current_customer_label(self):
+        if not self.logged_in_user:
+            return "Anonymous"
+        return (
+            self.logged_in_user.get("name")
+            or self.logged_in_user.get("email")
+            or "Signed-in customer"
+        )
+
+    def _set_payment_dialog_busy(self, busy: bool, message: str | None = None):
+        self.payment_save_in_flight = busy
+        button_state = "disabled" if busy else "normal"
+
+        if self.payment_cash_btn:
+            self.payment_cash_btn.configure(state=button_state)
+        if self.payment_card_btn:
+            self.payment_card_btn.configure(state=button_state)
+        if message and self.payment_status_var is not None:
+            self.payment_status_var.set(message)
+
+    def _destroy_payment_dialog(self, force: bool = False):
+        if self.payment_save_in_flight and not force:
+            return
+
+        if self.payment_dialog and self.payment_dialog.winfo_exists():
+            try:
+                self.payment_dialog.grab_release()
+            except Exception:
+                pass
+            self.payment_dialog.destroy()
+
+        self.payment_dialog = None
+        self.payment_status_var = None
+        self.payment_cash_btn = None
+        self.payment_card_btn = None
+        self.payment_save_in_flight = False
+
+    def _reset_checkout_state(self):
+        self.cart.clear()
+        self.refresh_cart_view()
+        self.scanning_requested = False
+        self.session_mode = None
+        self.login_token = None
+        self.logged_in_user = None
+        self.session_state_var.set("NO SESSION")
+        self.session_info_var.set("No session")
+        self.qr_label.qr_tk_img = None
+        self.qr_label.configure(image="", text="")
+
+    def _close_login_session_after_purchase(self):
+        if not self.login_token:
+            return
+
+        current_session = db.reference(f"login_sessions/{self.login_token}").get() or {}
+        closed_session = close_session_record(current_session)
+        db.reference(f"login_sessions/{self.login_token}").update(closed_session)
+
+    def _save_bill_with_payment(self, prepared_payload, payment_type: str):
+        if self.payment_save_in_flight:
+            return
+
+        persisted_payload = {
+            **prepared_payload,
+            "payment_type": payment_type,
+        }
+        self._set_payment_dialog_busy(
+            True,
+            f"Saving {prepared_payload['bill_id']} as {payment_type.title()}...",
+        )
+
+        try:
+            transaction_id = db.reference("transactions").push().key
+            if not transaction_id:
+                raise RuntimeError("Could not allocate transaction id from Firebase.")
+            updates = build_transaction_write_map(transaction_id, persisted_payload)
+            db.reference("/").update(updates)
+        except Exception as exc:
+            self.session_state_var.set("SAVE FAILED")
+            self.set_status(f"Could not save bill to Firebase: {exc}")
+            self._set_payment_dialog_busy(
+                False,
+                "Save failed. Fix the issue and choose Cash or Card to retry.",
+            )
+            return
+
+        session_close_error = None
+        if self.login_token:
+            try:
+                self._close_login_session_after_purchase()
+            except Exception as exc:
+                session_close_error = exc
+
+        self._destroy_payment_dialog(force=True)
+        self._reset_checkout_state()
+        self.set_status(
+            f"Saved transaction {persisted_payload['bill_id']} with {payment_type.title()} payment"
+        )
+
+        if session_close_error is not None:
+            messagebox.showwarning(
+                "Bill saved",
+                "Saved in Firebase:\n"
+                f"{persisted_payload['bill_id']}\n\n"
+                f"Payment: {payment_type.title()}\n"
+                f"Session close warning: {session_close_error}",
+            )
+            return
+
+        messagebox.showinfo(
+            "Bill generated",
+            "Saved in Firebase:\n"
+            f"{persisted_payload['bill_id']}\n\n"
+            f"Payment: {payment_type.title()}",
+        )
+
+    def _open_payment_dialog(self, prepared_payload):
+        if self.payment_dialog and self.payment_dialog.winfo_exists():
+            self.payment_dialog.lift()
+            self.payment_dialog.focus_force()
+            return
+
+        t = THEMES[self.theme_name]
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Select Payment Type")
+        dialog.configure(bg=t["panel"])
+        dialog.geometry("380x280")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        dialog.protocol("WM_DELETE_WINDOW", self._destroy_payment_dialog)
+        dialog.focus_force()
+
+        self.payment_dialog = dialog
+        self.payment_status_var = tk.StringVar(
+            value="Choose Cash or Card to save this bill."
+        )
+
+        tk.Label(
+            dialog,
+            text="Bill Ready",
+            font=("Georgia", 18, "bold"),
+            bg=t["panel"],
+            fg=t["fg"],
+        ).pack(anchor="w", padx=18, pady=(18, 8))
+
+        details = [
+            ("Bill ID", prepared_payload["bill_id"]),
+            ("Customer", self._current_customer_label()),
+            ("Total", f"₹ {prepared_payload['total']:.2f}"),
+            ("Items", str(prepared_payload["item_count"])),
+        ]
+        for label, value in details:
+            row = tk.Frame(dialog, bg=t["panel"])
+            row.pack(fill="x", padx=18, pady=3)
+            tk.Label(
+                row,
+                text=label,
+                font=("Segoe UI", 10, "bold"),
+                bg=t["panel"],
+                fg=t["subtle"],
+            ).pack(side="left")
+            tk.Label(
+                row,
+                text=value,
+                font=("Segoe UI", 10),
+                bg=t["panel"],
+                fg=t["fg"],
+            ).pack(side="right")
+
+        tk.Label(
+            dialog,
+            textvariable=self.payment_status_var,
+            bg=t["card"],
+            fg=t["fg"],
+            justify="left",
+            wraplength=320,
+            padx=12,
+            pady=10,
+        ).pack(fill="x", padx=18, pady=(16, 10))
+
+        button_row = tk.Frame(dialog, bg=t["panel"])
+        button_row.pack(fill="x", padx=18, pady=(0, 18))
+
+        self.payment_cash_btn = tk.Button(
+            button_row,
+            text="Cash",
+            command=lambda: self._save_bill_with_payment(prepared_payload, "cash"),
+            bg=t["warn"],
+            fg="black",
+            relief="flat",
+            padx=14,
+            pady=10,
+        )
+        self.payment_cash_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        self.payment_card_btn = tk.Button(
+            button_row,
+            text="Card",
+            command=lambda: self._save_bill_with_payment(prepared_payload, "card"),
+            bg=t["primary"],
+            fg="white",
+            relief="flat",
+            padx=14,
+            pady=10,
+        )
+        self.payment_card_btn.pack(side="left", fill="x", expand=True, padx=(6, 0))
+
     def generate_bill(self):
         if not self.session_mode or self.session_mode == "login_pending":
             messagebox.showwarning("Session not ready", "Start an Anonymous session or finish login first.")
@@ -470,40 +716,13 @@ class SelfCheckoutFirebaseApp:
             messagebox.showwarning("Empty cart", "Scan at least one item before generating bill.")
             return
 
-        payload = build_transaction_payload(
+        prepared_payload = build_transaction_payload(
             cart_items=list(self.cart.values()),
             session_type="logged_in" if self.session_mode == "logged_in" else "anonymous",
             customer=self.logged_in_user,
             pi_node=PI_NODE_NAME,
         )
-
-        try:
-            db.reference("transactions").push(payload)
-        except Exception as exc:
-            self.session_state_var.set("SAVE FAILED")
-            self.set_status(f"Could not save bill to Firebase: {exc}")
-            messagebox.showerror("Bill save failed", f"Could not save bill:\n{exc}")
-            return
-
-        self.set_status(f"Saved transaction {payload['bill_id']} to Firebase")
-        messagebox.showinfo("Bill generated", f"Saved in Firebase:\n{payload['bill_id']}")
-
-        if self.login_token:
-            try:
-                current_session = db.reference(f"login_sessions/{self.login_token}").get() or {}
-                closed_session = close_session_record(current_session)
-                db.reference(f"login_sessions/{self.login_token}").update(closed_session)
-            except Exception as exc:
-                self.set_status(f"Bill saved, but could not close session cleanly: {exc}")
-
-        self.cart.clear()
-        self.refresh_cart_view()
-        self.session_mode = None
-        self.login_token = None
-        self.logged_in_user = None
-        self.session_state_var.set("NO SESSION")
-        self.session_info_var.set("No session")
-        self.qr_label.configure(image="")
+        self._open_payment_dialog(prepared_payload)
 
     def on_exit(self):
         self._cleanup_login_poll()
