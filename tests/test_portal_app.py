@@ -7,6 +7,8 @@ def test_dashboard_loads(client):
     assert response.status_code == 200
     assert b"Retail Ledger" in response.data
     assert b"claim.example.com" in response.data
+    assert b"Payment" in response.data
+    assert b"card" in response.data
 
 
 def test_transactions_api_returns_json(client):
@@ -17,6 +19,7 @@ def test_transactions_api_returns_json(client):
     payload = response.get_json()
     assert payload["ok"] is True
     assert payload["transactions"][0]["bill_id"] == "BILL-2401"
+    assert payload["transactions"][0]["payment_type"] == "card"
 
 
 def test_portal_info_api_returns_dashboard_and_claim_urls(client):

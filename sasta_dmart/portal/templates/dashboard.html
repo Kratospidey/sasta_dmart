@@ -101,6 +101,7 @@
             <th>Time</th>
             <th>Session</th>
             <th>Customer</th>
+            <th>Payment</th>
             <th>Pi Node</th>
             <th class="align-right">Total</th>
           </tr>
@@ -113,13 +114,14 @@
                 <td>{{ tx.generated_at }}</td>
                 <td><span class="badge {{ 'badge-gold' if tx.session_type == 'logged_in' else 'badge-green' }}">{{ tx.session_type }}</span></td>
                 <td>{{ tx.customer.email if tx.customer and tx.customer.email else (tx.customer.name if tx.customer else 'Anonymous') }}</td>
+                <td>{{ tx.payment_type or '-' }}</td>
                 <td>{{ tx.pi_node or '-' }}</td>
                 <td class="align-right">₹ {{ '%.2f'|format(tx.total or 0) }}</td>
               </tr>
             {% endfor %}
           {% else %}
             <tr>
-              <td colspan="6">
+              <td colspan="7">
                 <div class="empty-state">
                   <p class="empty-title">The ledger is quiet for now.</p>
                   <p class="empty-copy">Your next checkout will appear here once the Pi writes a transaction.</p>

@@ -22,6 +22,7 @@ def client():
                 "generated_at": "2026-04-12T14:25:30+00:00",
                 "session_type": "logged_in",
                 "customer": {"email": "user@example.com", "name": "Aarav Shah"},
+                "payment_type": "card",
                 "total": 88.0,
                 "pi_node": "pi-front-counter",
             }
