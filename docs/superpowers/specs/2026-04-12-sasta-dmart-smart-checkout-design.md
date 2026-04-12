@@ -1,0 +1,394 @@
+# Sasta Dmart Smart Checkout Modernization Design
+
+## Goal
+
+Stabilize the QR login and Google sign-in flow, substantially improve the Pi and laptop UI, clean up configuration and repo structure, remove tracked secrets, and leave the project runnable on a Raspberry Pi plus a Linux laptop without brittle hostname guessing or manual hacks.
+
+## Current Baseline
+
+The current repo has two real deliverables:
+
+- `pi_checkout_gui_firebase.py`
+- `laptop_firebase_portal.py`
+
+The working baseline is:
+
+- anonymous checkout on the Pi works
+- transactions are written to Firebase
+- the laptop portal can list transactions
+
+The broken or weak areas are:
+
+- Pi QR login depends on runtime URL guessing and Firebase-published candidate URLs
+- Google sign-in is tied to the laptop portal origin, which is unreliable on phone/iPhone and produces `auth/unauthorized-domain`
+- auth-critical configuration is implicit, inconsistent, and mixed with machine-specific fallbacks
+- the repo still contains legacy non-Firebase artifacts and tracked secrets
+- both UIs still feel like prototypes
+
+## Chosen Architecture
+
+Use the approved split-auth hybrid approach:
+
+1. Keep the Pi runtime as a Python desktop app.
+2. Keep the laptop runtime as a local/Tailscale Flask dashboard and API.
+3. Move only the phone claim and Google sign-in flow to a small hosted HTTPS page on the user's Cloudflare domain.
+
+This is the smallest architecture that fixes the real reliability boundary without rewriting the hardware runtime or turning the repo into a frontend-heavy stack.
+
+## Architecture Boundaries
+
+### Pi Runtime
+
+The Pi remains the checkout runtime and owns:
+
+- camera preview
+- barcode scanning
+- local cart state
+- login session creation
+- polling login session state
+- bill generation
+- transaction writes to Firebase
+
+The Pi must never guess the auth URL from hostnames or published candidate lists. QR generation must always use `PUBLIC_CLAIM_BASE_URL`.
+
+### Laptop Runtime
+
+The laptop remains a Flask dashboard and local/Tailscale operator surface. It owns:
+
+- transaction dashboard
+- session visibility useful for operators
+- status and diagnostics surfaces for local use
+- local API endpoints needed only for dashboard/session diagnostics
+
+The laptop must be completely out of the phone auth path. It is not the canonical sign-in origin and must not be treated as the source of truth for QR claims.
+
+### Hosted Claim Surface
+
+The hosted claim surface is a minimal auth-focused page served from a public HTTPS origin on the user's Cloudflare-controlled domain. It owns:
+
+- reading the login token from the QR URL
+- Firebase Web Auth Google sign-in
+- one-time session claim
+- clear success/failure messaging for the phone user
+
+It must stay minimal and auth-focused. It is not a dashboard, not a marketing site, and not a duplicate portal.
+
+Preferred deployment shape:
+
+- a static Cloudflare Pages-style page with minimal JavaScript
+
+Only if claim security or write semantics require it should the hosted surface grow into a minimal serverless endpoint. That escalation is allowed, but it is a fallback, not the starting point.
+
+## Canonical URL Strategy
+
+The project must use explicit configuration, not runtime discovery, for auth-critical paths.
+
+Required canonical values:
+
+- `PUBLIC_CLAIM_BASE_URL`
+- `LAPTOP_DASHBOARD_BASE_URL`
+
+Rules:
+
+- Pi QR always points to `PUBLIC_CLAIM_BASE_URL` with the token.
+- `claim_url` may be stored in Firebase for diagnostics, but it is not the source of truth.
+- The laptop dashboard URL is for operator access and documentation only.
+- No "first candidate URL wins" logic may remain for auth-critical flows.
+
+## Session State Machine
+
+The session state machine is the primary correctness boundary.
+
+Allowed states:
+
+- `pending`
+- `claimed`
+- `closed`
+- `expired`
+- optional `cancelled`
+
+Primary paths:
+
+- `pending -> claimed -> closed`
+- `pending -> expired`
+
+Optional recovery/admin path:
+
+- `pending -> cancelled`
+
+Invalid transitions must be rejected. In particular:
+
+- a claimed session cannot be claimed again
+- a closed session cannot be claimed
+- an expired session cannot be claimed
+- unrelated fields cannot be mutated by the claim client
+
+## Login Session Record
+
+Each `login_sessions/<token>` record must contain at least:
+
+- `status`
+- `created_at`
+- `expires_at`
+- `pi_node`
+- `claimed_by`
+- `claimed_at`
+- optional `claim_url`
+- optional `closed_at`
+
+Recommended additional fields if useful during implementation:
+
+- `cancelled_at`
+- `claim_error`
+- `last_seen_at`
+
+The token must be one-time use only.
+
+## Expiry Ownership
+
+Expiry handling must be explicit rather than opportunistic.
+
+- the Pi is responsible for creating `expires_at`
+- the Pi polling flow must detect locally observed expiry and transition the session out of usable `pending`
+- the hosted claim surface must reject expired sessions
+- implementation may use a small shared helper to decide whether a session is claimable
+
+Whether the final expired write happens from Pi logic or from a shared claim/session helper is an implementation detail, but the observable behavior must be consistent:
+
+- expired sessions are no longer claimable
+- the Pi UI recovers cleanly and invites the user to start a fresh login session
+
+## Claim Implementation
+
+Preferred implementation:
+
+- the hosted claim page signs in with Firebase Web Auth
+- the client writes the claim directly to Firebase Realtime Database
+
+This avoids coupling phone auth to the local laptop runtime.
+
+If direct client write becomes too awkward to secure with RTDB rules, the fallback is:
+
+- use a minimal hosted/serverless claim endpoint
+
+The laptop dashboard must not be used as that fallback.
+
+The successful claim transition must set only the fields needed for the one-time state change:
+
+- `status = claimed`
+- `claimed_by`
+- `claimed_at`
+
+## RTDB Rules Requirements
+
+If the hosted claim page writes directly to RTDB, rules must tightly restrict claims:
+
+- only authenticated users can claim
+- only `pending` and unexpired sessions can be claimed
+- a successful claim cannot be overwritten
+- the client cannot mutate unrelated fields
+- the claim can only set the allowed fields needed for the transition to `claimed`
+
+README must include the exact rules or the exact manual rule changes required.
+
+## Config Model
+
+All auth-critical and deployment-critical values must be environment-driven and fail loudly when missing.
+
+Required runtime config:
+
+- `FIREBASE_DB_URL`
+- `FIREBASE_SERVICE_ACCOUNT_PATH`
+- `PUBLIC_CLAIM_BASE_URL`
+- `LAPTOP_DASHBOARD_BASE_URL`
+- `PI_NODE_NAME`
+
+Required hosted claim config:
+
+- Firebase web config values needed by the hosted page
+
+Rules:
+
+- no silent fallback to guessed hostnames
+- no hidden Windows-path defaults
+- no machine-specific defaults for auth-critical config
+- startup/config errors must be explicit, human-readable, and early
+
+## Repo Structure
+
+Keep the two existing entry scripts at the top level:
+
+- `pi_checkout_gui_firebase.py`
+- `laptop_firebase_portal.py`
+
+Move shared logic into a lean internal package:
+
+- `sasta_dmart/config.py`
+- `sasta_dmart/firebase.py`
+- `sasta_dmart/sessions.py`
+- `sasta_dmart/transactions.py`
+- `sasta_dmart/portal/`
+
+Add a separate hosted-claim directory:
+
+- `public_claim/`
+
+The module tree must stay lean. The goal is clear ownership, not framework ceremony.
+
+## UI Direction
+
+### Pi UI
+
+The Pi remains desktop-native and gets a stronger visual and state model:
+
+- premium, warm, elegant palette with a playful layer
+- clearer distinction between scan state, login state, and bill state
+- more prominent QR/session card
+- improved cart hierarchy and totals
+- tasteful motion/state feedback where practical
+
+The Pi UI should feel polished and presentable for a demo, but it must not become fragile or animation-heavy.
+
+### Laptop UI
+
+The laptop dashboard gets:
+
+- proper templates/static assets instead of a giant inline HTML page
+- improved typography, spacing, and hierarchy
+- better loading, empty, and error states
+- cleaner transaction table and badges
+- clearer explanation of canonical public claim URL versus local dashboard role
+- subtle motion and interactivity, not dashboard bloat
+
+### Tone Constraint
+
+The overall tone is:
+
+- premium
+- elegant
+- lightly playful
+
+It must not become cliche, mascot-like, or cringy.
+
+## Error Handling
+
+### Pi
+
+The Pi must show explicit statuses for:
+
+- pending claim
+- claimed success
+- expired session
+- cancelled session
+- Firebase/network polling failure
+- bill write failure
+- bill write success
+
+The user should always know what to do next.
+
+### Hosted Claim Page
+
+The hosted claim page must clearly communicate:
+
+- sign-in required
+- signed in successfully
+- claim succeeded
+- already claimed
+- expired token
+- invalid token
+- temporary network failure
+
+### Laptop Dashboard
+
+The laptop dashboard must show:
+
+- loading state
+- empty state
+- transaction load failure
+- session/portal diagnostics useful for operators
+
+## Cleanup Rules
+
+Remove dead files only after confirming they are obsolete in the final architecture:
+
+- `pi_checkout_gui.py`
+- `laptop_bill_server.py`
+- `received_bills.json`
+
+Secrets and local config must be removed from version control and blocked via `.gitignore`, including service-account JSON files and `.env` files.
+
+Add:
+
+- `.env.example`
+- `requirements-laptop.txt`
+- `requirements-pi.txt`
+- optional `requirements-dev.txt` only if it is genuinely useful
+
+## Documentation Requirements
+
+README must be rewritten to match the final architecture and include exact instructions for:
+
+- architecture overview
+- laptop setup
+- Pi setup
+- hosted claim setup
+- environment variables
+- Firebase Console setup
+- Google sign-in setup
+- authorized domains
+- required RTDB rules
+- Cloudflare deployment steps for the hosted claim page
+- QR login troubleshooting
+
+The documentation must use exact manual steps rather than vague placeholders.
+
+## Verification Requirements
+
+### Must Verify
+
+- anonymous checkout still works end-to-end
+- Pi login session creates the correct record and QR URL
+- Pi QR points to `PUBLIC_CLAIM_BASE_URL`
+- phone sign-in and claim work end-to-end
+- claim is one-time only
+- expired token is rejected
+- already-claimed token is rejected
+- Pi transitions correctly from `pending` to `claimed`
+- Pi recovers cleanly after expired or failed claim attempts
+- Pi handles Firebase/network failure during claim polling
+- Pi handles Firebase/network failure during bill write
+- bill generation closes the session and stores the transaction
+- laptop dashboard still works
+- startup/config failures are loud and readable
+- no secrets remain tracked in git
+
+### Testing Strategy
+
+Add lightweight automated verification around:
+
+- config validation
+- session state transitions
+- claim eligibility logic
+- transaction writes and data shaping
+- Flask route behavior where practical
+
+Do not over-promise full hardware automation for the Pi camera path. Preserve the working business logic while isolating as much testable logic as possible away from Tkinter/Picamera integrations.
+
+## Non-Goals
+
+The project does not need:
+
+- a full frontend rewrite of the Pi runtime
+- a heavyweight SPA stack for the laptop dashboard
+- runtime hostname discovery for auth-critical URLs
+- extra product features beyond stabilizing and polishing the approved flows
+
+## Implementation Outcome
+
+After implementation, the project should feel like the same product, but with:
+
+- a correct and predictable auth boundary
+- a much cleaner operator/deployment story
+- visibly stronger UI quality
+- cleaner repo and configuration hygiene
+- documentation that matches reality
