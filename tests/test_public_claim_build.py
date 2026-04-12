@@ -15,6 +15,7 @@ def test_render_config_requires_firebase_keys(tmp_path):
 def test_render_config_writes_plain_js_payload(tmp_path):
     output_path = tmp_path / "config.js"
     config = {
+        "FIREBASE_DB_URL": "https://example-default-rtdb.asia-southeast1.firebasedatabase.app",
         "FIREBASE_WEB_API_KEY": "api-key",
         "FIREBASE_WEB_AUTH_DOMAIN": "example.firebaseapp.com",
         "FIREBASE_WEB_PROJECT_ID": "example",
@@ -29,3 +30,7 @@ def test_render_config_writes_plain_js_payload(tmp_path):
     contents = output_path.read_text(encoding="utf-8")
     assert "window.PUBLIC_CLAIM_CONFIG" in contents
     assert '"apiKey": "api-key"' in contents
+    assert (
+        '"databaseURL": '
+        '"https://example-default-rtdb.asia-southeast1.firebasedatabase.app"'
+    ) in contents

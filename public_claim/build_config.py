@@ -6,6 +6,7 @@ import os
 
 
 REQUIRED_KEYS = (
+    "FIREBASE_DB_URL",
     "FIREBASE_WEB_API_KEY",
     "FIREBASE_WEB_AUTH_DOMAIN",
     "FIREBASE_WEB_PROJECT_ID",
@@ -26,6 +27,7 @@ def render_config(env: dict[str, str], output_path: Path) -> None:
     config = {
         "apiKey": env["FIREBASE_WEB_API_KEY"],
         "authDomain": env["FIREBASE_WEB_AUTH_DOMAIN"],
+        "databaseURL": env["FIREBASE_DB_URL"],
         "projectId": env["FIREBASE_WEB_PROJECT_ID"],
         "storageBucket": env["FIREBASE_WEB_STORAGE_BUCKET"],
         "messagingSenderId": env["FIREBASE_WEB_MESSAGING_SENDER_ID"],

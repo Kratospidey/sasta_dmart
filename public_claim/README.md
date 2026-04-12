@@ -18,7 +18,7 @@ Generate `config.js` before deploying:
 python public_claim/build_config.py
 ```
 
-This reads the required `FIREBASE_WEB_*` env vars and writes a plain static `config.js` file next to `index.html`.
+This reads `FIREBASE_DB_URL` plus the required `FIREBASE_WEB_*` env vars and writes a plain static `config.js` file next to `index.html`.
 
 ## Local smoke test
 
