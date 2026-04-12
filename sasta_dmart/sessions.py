@@ -65,3 +65,16 @@ def expire_session_record(
 
     snapshot["status"] = "expired"
     return snapshot
+
+
+def close_session_record(
+    record: dict[str, Any],
+    now_utc: str | datetime | None = None,
+) -> dict[str, Any]:
+    snapshot = deepcopy(record)
+    if snapshot.get("status") not in {"claimed", "pending"}:
+        return snapshot
+
+    snapshot["status"] = "closed"
+    snapshot["closed_at"] = _coerce_utc(now_utc).isoformat()
+    return snapshot

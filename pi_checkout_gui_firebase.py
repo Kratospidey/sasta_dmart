@@ -11,7 +11,6 @@ Features:
 import os
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -20,14 +19,21 @@ from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
 
 from sasta_dmart.config import load_runtime_config
+from sasta_dmart.firebase import initialize_firebase_admin
+from sasta_dmart.sessions import (
+    DEFAULT_LOGIN_SESSION_TTL_SECONDS,
+    build_login_session,
+    close_session_record,
+    expire_session_record,
+)
+from sasta_dmart.transactions import build_transaction_payload
 
 try:
     import qrcode
 except Exception:  # optional dependency
     qrcode = None
 
-import firebase_admin
-from firebase_admin import credentials, db
+from firebase_admin import db
 
 try:
     from picamera2 import Picamera2
@@ -53,7 +59,7 @@ PI_NODE_NAME = RUNTIME_CONFIG.pi_node_name
 # ========= UI / scanner config =========
 WINDOW_TITLE = "Sasta Dmart Smart Checkout"
 SCAN_COOLDOWN_SECONDS = 1.5
-LOGIN_SESSION_TTL_SECONDS = 240
+LOGIN_SESSION_TTL_SECONDS = DEFAULT_LOGIN_SESSION_TTL_SECONDS
 
 # Product ID -> Name
 PRODUCT_LOOKUP = {
@@ -64,26 +70,26 @@ PRODUCT_LOOKUP = {
 
 THEMES = {
     "dark": {
-        "bg": "#0f172a",
-        "panel": "#111827",
-        "card": "#1f2937",
-        "fg": "#f9fafb",
-        "subtle": "#9ca3af",
-        "primary": "#2563eb",
-        "success": "#16a34a",
-        "warn": "#f59e0b",
-        "danger": "#dc2626",
+        "bg": "#191311",
+        "panel": "#241a16",
+        "card": "#342620",
+        "fg": "#fff7ef",
+        "subtle": "#ccb2a1",
+        "primary": "#d0973f",
+        "success": "#57b58b",
+        "warn": "#f1c56f",
+        "danger": "#cc6b4d",
     },
     "light": {
-        "bg": "#f3f4f6",
-        "panel": "#ffffff",
-        "card": "#f8fafc",
-        "fg": "#111827",
-        "subtle": "#374151",
-        "primary": "#2563eb",
-        "success": "#16a34a",
-        "warn": "#d97706",
-        "danger": "#dc2626",
+        "bg": "#f6efe5",
+        "panel": "#fff9f2",
+        "card": "#f0e4d7",
+        "fg": "#2b1c15",
+        "subtle": "#7a6256",
+        "primary": "#b97a21",
+        "success": "#1f7a57",
+        "warn": "#e8b95b",
+        "danger": "#b9503b",
     },
 }
 
@@ -116,9 +122,7 @@ class SelfCheckoutFirebaseApp:
         self.update_video_frame()
 
     def _init_firebase(self):
-        if not firebase_admin._apps:
-            cred = credentials.Certificate(SERVICE_ACCOUNT_PATH)
-            firebase_admin.initialize_app(cred, {"databaseURL": FIREBASE_DB_URL})
+        initialize_firebase_admin(SERVICE_ACCOUNT_PATH, FIREBASE_DB_URL)
 
     def _setup_styles(self):
         self.style = ttk.Style()
@@ -158,11 +162,19 @@ class SelfCheckoutFirebaseApp:
 
         tk.Label(
             self.header,
-            text="🛒 Sasta Dmart Smart Checkout",
-            font=("Segoe UI", 20, "bold"),
+            text="Sasta Dmart Checkout",
+            font=("Georgia", 22, "bold"),
             bg=t["bg"],
             fg=t["fg"],
         ).pack(side="left")
+
+        tk.Label(
+            self.header,
+            text="Premium self-checkout kiosk for demo-ready retail flows",
+            font=("Segoe UI", 10),
+            bg=t["bg"],
+            fg=t["subtle"],
+        ).pack(side="left", padx=(14, 0), pady=(8, 0))
 
         self.theme_btn = tk.Button(
             self.header,
@@ -203,6 +215,18 @@ class SelfCheckoutFirebaseApp:
 
         tk.Button(session_card, text="Anonymous", command=self.start_anonymous_session, bg=t["warn"], fg="black", relief="flat", pady=8).pack(fill="x", pady=(10, 6))
         tk.Button(session_card, text="Login via Phone", command=self.start_login_session, bg=t["primary"], fg="white", relief="flat", pady=8).pack(fill="x")
+
+        self.session_state_var = tk.StringVar(value="NO SESSION")
+        self.session_state_label = tk.Label(
+            session_card,
+            textvariable=self.session_state_var,
+            bg=t["card"],
+            fg=t["fg"],
+            font=("Segoe UI", 9, "bold"),
+            padx=10,
+            pady=6,
+        )
+        self.session_state_label.pack(anchor="w", pady=(10, 0))
 
         self.session_info_var = tk.StringVar(value="No session")
         tk.Label(session_card, textvariable=self.session_info_var, bg=t["panel"], fg=t["subtle"], justify="left", wraplength=350).pack(anchor="w", pady=(10, 0))
@@ -326,6 +350,7 @@ class SelfCheckoutFirebaseApp:
         self.login_token = None
         self.logged_in_user = None
         self.qr_label.configure(image="")
+        self.session_state_var.set("ANONYMOUS")
         self.session_info_var.set("Anonymous session active")
         self.set_status("Anonymous session started.")
 
@@ -335,20 +360,19 @@ class SelfCheckoutFirebaseApp:
         self.logged_in_user = None
 
         token = uuid.uuid4().hex
-        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=LOGIN_SESSION_TTL_SECONDS)).isoformat()
-        payload = {
-            "status": "pending",
-            "claimed": False,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "expires_at": expires_at,
-            "claimed_by": None,
-        }
+        payload = build_login_session(
+            token=token,
+            pi_node=PI_NODE_NAME,
+            public_claim_base_url=PUBLIC_CLAIM_BASE_URL,
+            ttl_seconds=LOGIN_SESSION_TTL_SECONDS,
+        )
         db.reference(f"login_sessions/{token}").set(payload)
         self.login_token = token
 
-        login_url = f"{PUBLIC_CLAIM_BASE_URL}/?token={token}"
+        login_url = payload["claim_url"]
+        self.session_state_var.set("LOGIN PENDING")
         self.session_info_var.set(
-            "Login pending. Scan QR with phone camera and sign in with Google.\n"
+            "Scan with your phone and finish Google sign-in on the hosted claim page.\n"
             f"Link: {login_url}"
         )
         self._render_qr(login_url)
@@ -369,11 +393,28 @@ class SelfCheckoutFirebaseApp:
         if not self.login_token:
             return
 
-        session = db.reference(f"login_sessions/{self.login_token}").get() or {}
-        if session.get("claimed") and session.get("claimed_by"):
+        try:
+            session_ref = db.reference(f"login_sessions/{self.login_token}")
+            session = session_ref.get() or {}
+        except Exception as exc:
+            self.session_state_var.set("NETWORK ISSUE")
+            self.set_status(f"Could not refresh claim status: {exc}")
+            self.poll_job = self.root.after(2000, self._poll_login_status)
+            return
+
+        expired_session = expire_session_record(session)
+        if expired_session.get("status") == "expired" and session.get("status") == "pending":
+            session = expired_session
+            try:
+                session_ref.update({"status": "expired"})
+            except Exception:
+                pass
+
+        if session.get("status") == "claimed" and session.get("claimed_by"):
             self.session_mode = "logged_in"
             self.logged_in_user = session["claimed_by"]
             name = self.logged_in_user.get("name") or self.logged_in_user.get("email") or "User"
+            self.session_state_var.set("SIGNED IN")
             self.session_info_var.set(f"Logged in: {name}\nEmail: {self.logged_in_user.get('email', '-')}")
             self.set_status("Login successful. You can scan items now.")
             return
@@ -381,8 +422,17 @@ class SelfCheckoutFirebaseApp:
         if session.get("status") == "expired":
             self.session_mode = None
             self.login_token = None
+            self.session_state_var.set("EXPIRED")
             self.session_info_var.set("Login session expired. Start login again.")
             self.set_status("Login expired.")
+            return
+
+        if session.get("status") == "cancelled":
+            self.session_mode = None
+            self.login_token = None
+            self.session_state_var.set("CANCELLED")
+            self.session_info_var.set("Login session cancelled. Start login again.")
+            self.set_status("Login cancelled.")
             return
 
         self.poll_job = self.root.after(1500, self._poll_login_status)
@@ -420,49 +470,38 @@ class SelfCheckoutFirebaseApp:
             messagebox.showwarning("Empty cart", "Scan at least one item before generating bill.")
             return
 
-        items = []
-        total = 0.0
-        for item in self.cart.values():
-            line_total = item["qty"] * item["unit_price"]
-            total += line_total
-            items.append(
-                {
-                    "product_id": item["product_id"],
-                    "name": item["name"],
-                    "qty": item["qty"],
-                    "unit_price": round(item["unit_price"], 2),
-                    "line_total": round(line_total, 2),
-                    "barcode": item["barcode"],
-                }
-            )
+        payload = build_transaction_payload(
+            cart_items=list(self.cart.values()),
+            session_type="logged_in" if self.session_mode == "logged_in" else "anonymous",
+            customer=self.logged_in_user,
+            pi_node=PI_NODE_NAME,
+        )
 
-        payload = {
-            "bill_id": f"BILL-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6].upper()}",
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "session_type": "logged_in" if self.session_mode == "logged_in" else "anonymous",
-            "customer": self.logged_in_user if self.logged_in_user else {"name": "Anonymous", "uid": None, "email": None},
-            "items": items,
-            "total": round(total, 2),
-            "pi_node": PI_NODE_NAME,
-        }
+        try:
+            db.reference("transactions").push(payload)
+        except Exception as exc:
+            self.session_state_var.set("SAVE FAILED")
+            self.set_status(f"Could not save bill to Firebase: {exc}")
+            messagebox.showerror("Bill save failed", f"Could not save bill:\n{exc}")
+            return
 
-        db.reference("transactions").push(payload)
         self.set_status(f"Saved transaction {payload['bill_id']} to Firebase")
         messagebox.showinfo("Bill generated", f"Saved in Firebase:\n{payload['bill_id']}")
 
         if self.login_token:
-            db.reference(f"login_sessions/{self.login_token}").update(
-                {
-                    "status": "closed",
-                    "closed_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
+            try:
+                current_session = db.reference(f"login_sessions/{self.login_token}").get() or {}
+                closed_session = close_session_record(current_session)
+                db.reference(f"login_sessions/{self.login_token}").update(closed_session)
+            except Exception as exc:
+                self.set_status(f"Bill saved, but could not close session cleanly: {exc}")
 
         self.cart.clear()
         self.refresh_cart_view()
         self.session_mode = None
         self.login_token = None
         self.logged_in_user = None
+        self.session_state_var.set("NO SESSION")
         self.session_info_var.set("No session")
         self.qr_label.configure(image="")
 
