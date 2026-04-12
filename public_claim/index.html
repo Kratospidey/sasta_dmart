@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sasta Dmart Claim</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell">
+    <section class="claim-card">
+      <p class="eyebrow">Sasta Dmart</p>
+      <h1>Claim your checkout session</h1>
+      <p class="subtitle">
+        Sign in with Google to attach this basket to your account.
+        This page is the only supported QR sign-in surface.
+      </p>
+
+      <div class="session-box">
+        <div>
+          <span class="label">Session token</span>
+          <strong id="tokenText">Checking link…</strong>
+        </div>
+        <span class="pill" id="sessionState">Loading</span>
+      </div>
+
+      <div class="actions">
+        <button id="signInBtn" class="btn btn-dark" type="button">Sign in with Google</button>
+        <button id="claimBtn" class="btn btn-gold" type="button" disabled>Claim session</button>
+      </div>
+
+      <div class="meta">
+        <div class="meta-row">
+          <span class="meta-label">Signed in user</span>
+          <span class="meta-value" id="userText">Not signed in</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">Claim status</span>
+          <span class="meta-value" id="statusText">Waiting for session check</span>
+        </div>
+      </div>
+
+      <div id="statusPanel" class="status-panel status-idle">
+        Opened from a Pi QR code. We’ll verify the token and enable claim once the session is valid.
+      </div>
+    </section>
+  </main>
+
+  <script src="./config.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+window.PUBLIC_CLAIM_CONFIG = {{CONFIG_JSON}};
