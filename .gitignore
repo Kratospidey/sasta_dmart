@@ -6,3 +6,4 @@ sasta-dmart-firebase-adminsdk-fbsvc-*.json
 !.env.example
 __pycache__/
 .pytest_cache/
+public_claim/config.js

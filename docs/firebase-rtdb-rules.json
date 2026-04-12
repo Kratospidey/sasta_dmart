@@ -1,0 +1,20 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "login_sessions": {
+      "$token": {
+        ".read": "auth != null",
+        ".write": "auth != null && data.exists() && data.child('status').val() == 'pending' && !data.child('claimed_by').exists() && now < data.child('expires_at_ms').val() && newData.child('status').val() == 'claimed' && newData.child('claimed_at').isString() && newData.child('claimed_by/uid').val() == auth.uid && (!newData.child('claimed_by/email').exists() || newData.child('claimed_by/email').val() == auth.token.email) && (!newData.child('claimed_by/name').exists() || newData.child('claimed_by/name').isString()) && newData.child('created_at').val() == data.child('created_at').val() && newData.child('expires_at').val() == data.child('expires_at').val() && newData.child('expires_at_ms').val() == data.child('expires_at_ms').val() && newData.child('pi_node').val() == data.child('pi_node').val() && newData.child('claim_url').val() == data.child('claim_url').val() && (!newData.child('closed_at').exists() || newData.child('closed_at').val() == data.child('closed_at').val())"
+      }
+    },
+    "transactions": {
+      ".read": false,
+      ".write": false
+    },
+    "portal_config": {
+      ".read": false,
+      ".write": false
+    }
+  }
+}
