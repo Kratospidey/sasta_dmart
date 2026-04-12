@@ -8,7 +8,7 @@ from public_claim.build_config import render_config
 
 
 def test_render_config_requires_firebase_keys(tmp_path):
-    with pytest.raises(RuntimeError, match="FIREBASE_WEB_API_KEY"):
+    with pytest.raises(RuntimeError, match="FIREBASE_DB_URL"):
         render_config({}, tmp_path / "config.js")
 
 
