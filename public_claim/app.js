@@ -1,7 +1,13 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getAuth, GoogleAuthProvider, getRedirectResult, onAuthStateChanged, signInWithPopup, signInWithRedirect } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getDatabase, get, ref, runTransaction } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
-import { isClaimable, isExpiredSession, shouldEnableClaimButton } from "./claim_state.mjs";
+import {
+  buildClaimTransactionUpdate,
+  describeClaimFailure,
+  isClaimable,
+  isExpiredSession,
+  shouldEnableClaimButton,
+} from "./claim_state.mjs";
 
 
 const config = window.PUBLIC_CLAIM_CONFIG;
@@ -46,6 +52,18 @@ function syncClaimButtonState() {
     session: latestSession,
     isClaimInFlight,
   });
+}
+
+
+function logClaimDebug(event, details) {
+  console.info(`[public-claim] ${event}`, details);
+}
+
+
+async function rereadSession(sessionRef) {
+  const snapshot = await get(sessionRef);
+  latestSession = snapshot.val();
+  return latestSession;
 }
 
 
@@ -115,52 +133,115 @@ async function tryClaim() {
   isClaimInFlight = true;
   syncClaimButtonState();
 
-  const sessionRef = ref(database, `login_sessions/${token}`);
+  const sessionPath = `login_sessions/${token}`;
+  const sessionRef = ref(database, sessionPath);
+  const fallbackSession = latestSession;
   let blockedReason = "Session is no longer claimable.";
+  let postClaimSession = latestSession;
+
+  logClaimDebug("claim-start", {
+    token,
+    path: sessionPath,
+    method: "runTransaction",
+    signedInUser: currentUser?.email || currentUser?.uid || null,
+    fallbackStatus: fallbackSession?.status || null,
+  });
 
   try {
+    const claimedAt = new Date().toISOString();
     const result = await runTransaction(sessionRef, (current) => {
-      if (!current) {
-        blockedReason = "This session no longer exists.";
-        return;
-      }
-      if (current.status !== "pending") {
-        blockedReason = `This session is ${current.status}.`;
-        return;
-      }
-      if (current.claimed_by) {
-        blockedReason = "This session has already been claimed.";
-        return;
-      }
-      if (isExpiredSession(current)) {
-        blockedReason = "This session has expired.";
+      const decision = buildClaimTransactionUpdate({
+        currentSession: current,
+        fallbackSession,
+        user: currentUser,
+        claimedAt,
+      });
+
+      if (!decision.allowed) {
+        blockedReason = decision.message;
         return;
       }
 
-      return {
-        ...current,
-        status: "claimed",
-        claimed_by: {
-          uid: currentUser.uid,
-          email: currentUser.email || null,
-          name: currentUser.displayName || null,
-        },
-        claimed_at: new Date().toISOString(),
-      };
+      return decision.session;
+    });
+
+    logClaimDebug("claim-transaction-result", {
+      token,
+      path: sessionPath,
+      method: "runTransaction",
+      committed: result.committed,
+      blockedReason,
+    });
+
+    postClaimSession = await rereadSession(sessionRef);
+    logClaimDebug("claim-post-read", {
+      token,
+      path: sessionPath,
+      exists: Boolean(postClaimSession),
+      status: postClaimSession?.status || null,
     });
 
     if (!result.committed) {
-      setSessionBadge("Rejected");
-      statusText.textContent = blockedReason;
-      setPanel(blockedReason, "error");
-      latestSession = result.snapshot?.val() || null;
+      const message = describeClaimFailure({
+        blockedReason,
+        postClaimSession,
+        error: null,
+      });
+      setSessionBadge(postClaimSession ? "Rejected" : "Missing");
+      statusText.textContent = message;
+      setPanel(message, "error");
       return;
     }
 
-    latestSession = result.snapshot.val();
+    if (!postClaimSession || postClaimSession.status !== "claimed") {
+      const message = describeClaimFailure({
+        blockedReason,
+        postClaimSession,
+        error: null,
+      });
+      setSessionBadge(postClaimSession ? "Write failed" : "Missing");
+      statusText.textContent = message;
+      setPanel(message, "error");
+      return;
+    }
+
     setSessionBadge("Claimed");
     statusText.textContent = "Session attached successfully";
     setPanel("Checkout session claimed successfully. You can return to the Pi now.", "success");
+  } catch (error) {
+    logClaimDebug("claim-error", {
+      token,
+      path: sessionPath,
+      method: "runTransaction",
+      errorCode: error?.code || null,
+      errorMessage: error?.message || String(error),
+    });
+
+    try {
+      postClaimSession = await rereadSession(sessionRef);
+      logClaimDebug("claim-post-error-read", {
+        token,
+        path: sessionPath,
+        exists: Boolean(postClaimSession),
+        status: postClaimSession?.status || null,
+      });
+    } catch (readError) {
+      logClaimDebug("claim-post-error-read-failed", {
+        token,
+        path: sessionPath,
+        errorCode: readError?.code || null,
+        errorMessage: readError?.message || String(readError),
+      });
+    }
+
+    const message = describeClaimFailure({
+      blockedReason,
+      postClaimSession,
+      error,
+    });
+    setSessionBadge(postClaimSession ? "Write failed" : "Missing");
+    statusText.textContent = message;
+    setPanel(message, "error");
   } finally {
     isClaimInFlight = false;
     syncClaimButtonState();
