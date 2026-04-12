@@ -19,6 +19,8 @@ import cv2
 from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
 
+from sasta_dmart.config import load_runtime_config
+
 try:
     import qrcode
 except Exception:  # optional dependency
@@ -36,13 +38,17 @@ except ImportError as exc:
     ) from exc
 
 
+try:
+    RUNTIME_CONFIG = load_runtime_config("pi")
+except RuntimeError as exc:
+    raise SystemExit(str(exc)) from exc
+
+
 # ========= Firebase / network config =========
-FIREBASE_DB_URL = "https://sasta-dmart-default-rtdb.asia-southeast1.firebasedatabase.app"
-SERVICE_ACCOUNT_PATH = os.getenv(
-    "FIREBASE_SERVICE_ACCOUNT_PATH",
-    r"C:\Users\param\Downloads\sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
-)
-LAPTOP_PORTAL_BASE = os.getenv("LAPTOP_PORTAL_BASE", "").strip()
+FIREBASE_DB_URL = RUNTIME_CONFIG.firebase_db_url
+SERVICE_ACCOUNT_PATH = RUNTIME_CONFIG.firebase_service_account_path
+PUBLIC_CLAIM_BASE_URL = RUNTIME_CONFIG.public_claim_base_url
+PI_NODE_NAME = RUNTIME_CONFIG.pi_node_name
 
 # ========= UI / scanner config =========
 WINDOW_TITLE = "Sasta Dmart Smart Checkout"
@@ -340,8 +346,7 @@ class SelfCheckoutFirebaseApp:
         db.reference(f"login_sessions/{token}").set(payload)
         self.login_token = token
 
-        base_url = self._resolve_portal_base_url()
-        login_url = f"{base_url}/?token={token}"
+        login_url = f"{PUBLIC_CLAIM_BASE_URL}/?token={token}"
         self.session_info_var.set(
             "Login pending. Scan QR with phone camera and sign in with Google.\n"
             f"Link: {login_url}"
@@ -349,17 +354,6 @@ class SelfCheckoutFirebaseApp:
         self._render_qr(login_url)
         self.set_status("Waiting for user to login from phone...")
         self._poll_login_status()
-
-    def _resolve_portal_base_url(self):
-        if LAPTOP_PORTAL_BASE:
-            return LAPTOP_PORTAL_BASE.rstrip("/")
-
-        portal_cfg = db.reference("portal_config").get() or {}
-        for url in portal_cfg.get("candidate_urls", []):
-            if isinstance(url, str) and url.startswith("http"):
-                return url.rstrip("/")
-
-        return "http://krato-omen:5000"
 
     def _render_qr(self, text):
         if not qrcode:
@@ -449,7 +443,7 @@ class SelfCheckoutFirebaseApp:
             "customer": self.logged_in_user if self.logged_in_user else {"name": "Anonymous", "uid": None, "email": None},
             "items": items,
             "total": round(total, 2),
-            "pi_node": os.getenv("PI_NODE_NAME", "param"),
+            "pi_node": PI_NODE_NAME,
         }
 
         db.reference("transactions").push(payload)

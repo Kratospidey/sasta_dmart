@@ -15,13 +15,20 @@ import firebase_admin
 from firebase_admin import auth, credentials, db
 from flask import Flask, jsonify, render_template_string, request
 
+from sasta_dmart.config import load_runtime_config
+
 app = Flask(__name__)
 
-FIREBASE_DB_URL = "https://sasta-dmart-default-rtdb.asia-southeast1.firebasedatabase.app"
-SERVICE_ACCOUNT_PATH = os.getenv(
-    "FIREBASE_SERVICE_ACCOUNT_PATH",
-    r"./sasta-dmart-firebase-adminsdk-fbsvc-137566f9a3.json",
-)
+try:
+    RUNTIME_CONFIG = load_runtime_config("laptop")
+except RuntimeError as exc:
+    raise SystemExit(str(exc)) from exc
+
+
+FIREBASE_DB_URL = RUNTIME_CONFIG.firebase_db_url
+SERVICE_ACCOUNT_PATH = RUNTIME_CONFIG.firebase_service_account_path
+PUBLIC_CLAIM_BASE_URL = RUNTIME_CONFIG.public_claim_base_url
+LAPTOP_DASHBOARD_BASE_URL = RUNTIME_CONFIG.laptop_dashboard_base_url
 
 FIREBASE_WEB_CONFIG = {
     "apiKey": "AIzaSyDG6DfpBGk55RNtn601y9mHzfIbi6KnqdU",
@@ -53,28 +60,14 @@ def _detect_tailscale_ipv4():
 
 
 def _portal_info():
-    configured_base = os.getenv("LAPTOP_PORTAL_BASE", "http://krato-omen:5000").rstrip("/")
     hostname = socket.gethostname().lower()
     tailscale_ip = _detect_tailscale_ipv4()
 
-    candidates = [configured_base]
-    if tailscale_ip:
-        candidates.append(f"http://{tailscale_ip}:5000")
-    if hostname:
-        candidates.append(f"http://{hostname}:5000")
-
-    deduped = []
-    seen = set()
-    for url in candidates:
-        if url and url not in seen:
-            seen.add(url)
-            deduped.append(url)
-
     return {
-        "configured_base": configured_base,
+        "dashboard_url": LAPTOP_DASHBOARD_BASE_URL,
+        "public_claim_base_url": PUBLIC_CLAIM_BASE_URL,
         "tailscale_ip": tailscale_ip,
         "hostname": hostname,
-        "candidate_urls": deduped,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
 
