@@ -33,6 +33,11 @@ Hosted claim page:
 
 - `public_claim/`
 
+Hosted customer URLs after deployment:
+
+- `https://claim.yourdomain.com/` for QR session claim
+- `https://claim.yourdomain.com/history.html` for signed-in purchase history
+
 ## Architecture
 
 ### Pi runtime
@@ -186,6 +191,8 @@ PUBLIC_CLAIM_BASE_URL=https://claim.yourdomain.com
 
 That exact HTTPS origin is what the Pi QR code must use.
 
+Any change under `public_claim/` requires a fresh Cloudflare Direct Upload deployment before the hosted pages will reflect it.
+
 ## Firebase Console Setup
 
 ### 1. Enable Google sign-in
@@ -221,6 +228,7 @@ These rules are designed for:
 - authenticated reads of `login_sessions/<token>` from the hosted claim page
 - atomic one-time writes from `pending` to `claimed`
 - immutable session metadata during client claims
+- authenticated customer-owned reads from `customer_transactions/<uid>` on `history.html`
 
 ### 4. Web app config
 
@@ -241,6 +249,8 @@ Important rule assumptions:
 
 - client reads and writes for login sessions require authenticated users
 - session claims must stay atomic
+- `transactions` stays closed to clients
+- `customer_transactions/<uid>` is the customer-facing read branch
 - the rules rely on `expires_at_ms` for time-based expiry checks
 - the Pi and laptop use the Admin SDK, so they are not constrained by these client rules
 

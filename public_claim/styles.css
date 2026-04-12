@@ -33,6 +33,10 @@ body {
   width: min(34rem, 100%);
 }
 
+.shell-wide {
+  width: min(42rem, 100%);
+}
+
 .claim-card {
   background: var(--surface);
   border: 1px solid var(--line);
@@ -40,6 +44,28 @@ body {
   box-shadow: var(--shadow);
   padding: 1.7rem;
   backdrop-filter: blur(12px);
+}
+
+.page-topbar,
+.page-link-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.page-link-row {
+  margin-top: 1rem;
+}
+
+.page-link {
+  color: var(--dark);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.page-link:hover {
+  text-decoration: underline;
 }
 
 .eyebrow,
@@ -98,6 +124,10 @@ h1 {
   margin-top: 1.2rem;
 }
 
+.actions-inline {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .btn {
   appearance: none;
   border: 0;
@@ -128,6 +158,12 @@ h1 {
   background: var(--gold);
   color: #2d1e10;
   box-shadow: 0 12px 26px rgba(195, 138, 51, 0.22);
+}
+
+.btn-light {
+  background: rgba(255, 255, 255, 0.65);
+  color: var(--dark);
+  box-shadow: 0 12px 26px rgba(43, 29, 23, 0.08);
 }
 
 .meta {
@@ -172,6 +208,71 @@ h1 {
   color: var(--danger);
 }
 
+.history-list {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1.2rem;
+}
+
+.history-card,
+.history-empty {
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--line);
+  padding: 1rem 1.05rem;
+}
+
+.history-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+
+.history-grid {
+  display: grid;
+  gap: 0.7rem;
+  margin-top: 1rem;
+}
+
+.history-detail {
+  margin-top: 1rem;
+}
+
+.history-detail summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--dark);
+}
+
+.history-items {
+  list-style: none;
+  padding: 0;
+  margin: 0.85rem 0 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.history-items li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.75rem;
+  align-items: center;
+  color: var(--muted);
+}
+
+.empty-title {
+  margin: 0;
+  font-family: "Fraunces", serif;
+  font-size: 1.2rem;
+}
+
+.empty-copy {
+  margin: 0.55rem 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
 @media (max-width: 640px) {
   .session-box,
   .meta-row {
@@ -181,5 +282,24 @@ h1 {
 
   .meta-value {
     text-align: left;
+  }
+
+  .page-topbar,
+  .page-link-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .actions-inline {
+    grid-template-columns: 1fr;
+  }
+
+  .history-card-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .history-items li {
+    grid-template-columns: 1fr;
   }
 }

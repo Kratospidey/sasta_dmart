@@ -12,6 +12,12 @@
       ".read": false,
       ".write": false
     },
+    "customer_transactions": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": false
+      }
+    },
     "portal_config": {
       ".read": false,
       ".write": false

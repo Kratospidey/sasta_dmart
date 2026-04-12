@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sasta Dmart History</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <main class="shell shell-wide">
+    <section class="claim-card">
+      <div class="page-topbar">
+        <p class="eyebrow">Sasta Dmart</p>
+        <a class="page-link" href="./index.html">Back to claim page</a>
+      </div>
+
+      <h1>Your purchase history</h1>
+      <p class="subtitle">
+        Sign in with Google to view past purchases attached to your account on this checkout system.
+      </p>
+
+      <div class="actions actions-inline">
+        <button id="historySignInBtn" class="btn btn-dark" type="button">Sign in with Google</button>
+        <button id="historySignOutBtn" class="btn btn-light" type="button" hidden>Sign out</button>
+      </div>
+
+      <div class="meta">
+        <div class="meta-row">
+          <span class="meta-label">Signed in user</span>
+          <span class="meta-value" id="historyUserText">Not signed in</span>
+        </div>
+        <div class="meta-row">
+          <span class="meta-label">History status</span>
+          <span class="meta-value" id="historyStatusText">Waiting for sign-in</span>
+        </div>
+      </div>
+
+      <div id="historyStatusPanel" class="status-panel status-idle">
+        Sign in to load purchases from your account-specific history branch.
+      </div>
+
+      <section class="history-list" id="historyList">
+        <article class="history-empty">
+          <p class="empty-title">Sign in to view your purchase history.</p>
+          <p class="empty-copy">Only purchases attached to your own account will appear here.</p>
+        </article>
+      </section>
+    </section>
+  </main>
+
+  <script src="./config.js"></script>
+  <script type="module" src="./history.js"></script>
+</body>
+</html>
