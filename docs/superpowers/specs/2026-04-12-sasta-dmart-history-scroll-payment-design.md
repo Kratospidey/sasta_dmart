@@ -102,6 +102,13 @@ Existing fields remain in place, including:
 - `total`
 - `pi_node`
 
+The following derived fields must be computed once before persistence and then copied unchanged into both the source-of-truth record and the mirrored customer record:
+
+- `generated_at`
+- `generated_at_ms`
+- `item_count`
+- `item_summary`
+
 ### Mirrored customer history record
 
 For signed-in purchases only, also write a mirrored record under:
@@ -151,6 +158,7 @@ Add a companion module:
 Optional small UX addition:
 
 - a lightweight link or button from `public_claim/index.html` to `history.html`
+- a small sign-out action on `history.html`
 
 The claim page must remain focused on QR token claim and must not be merged with history browsing.
 
@@ -242,19 +250,37 @@ The dialog offers exactly two choices:
 - `Cash`
 - `Card`
 
+The payment dialog must behave as a guarded modal:
+
+- use `transient(...)`
+- use `grab_set()`
+- disable `Cash` and `Card` buttons while a save is in flight
+- block or ignore dialog close while save is in flight
+- re-enable retry only after a failed save
+
 ### Save behavior
 
 On selection:
 
 - set `payment_type` to `"cash"` or `"card"`
-- write the source-of-truth transaction to `transactions/<push-id>`
-- if `customer.uid` exists, write the mirrored record to `customer_transactions/<uid>/<push-id>`
+- build the final persisted payload once
+- allocate one Firebase `push-id` for the transaction
+- create one root-level RTDB multi-location update map
+- always include `transactions/<push-id>`
+- if `customer.uid` exists, also include `customer_transactions/<uid>/<push-id>`
+- perform one atomic Admin SDK write for the full update map
+
+For anonymous checkout, the same save flow is used, but the atomic update map contains only:
+
+- `transactions/<push-id>`
 
 Only after a successful write:
 
 - close/end the login session as appropriate
 - clear/reset cart and session state exactly once
 - show success confirmation in the kiosk UI
+
+Treat the purchase save as failed unless the full atomic multi-location update succeeds.
 
 ### Failure behavior
 
