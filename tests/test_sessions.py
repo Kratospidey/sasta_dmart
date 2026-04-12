@@ -24,6 +24,7 @@ def test_build_login_session_sets_default_ttl():
     assert record["claimed_at"] is None
     assert record["claim_url"] == "https://claim.example.com/?token=abc123"
     assert record["expires_at"] == "2026-04-12T14:24:31+00:00"
+    assert record["expires_at_ms"] == 1776003871000
 
 
 def test_build_claim_url_uses_canonical_base():

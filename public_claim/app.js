@@ -45,12 +45,23 @@ function isExpired(expiresAt) {
 }
 
 
+function isExpiredSession(session) {
+  if (!session) {
+    return true;
+  }
+  if (typeof session.expires_at_ms === "number") {
+    return session.expires_at_ms < Date.now();
+  }
+  return isExpired(session.expires_at);
+}
+
+
 function isClaimable(session) {
   return Boolean(
     session &&
     session.status === "pending" &&
     !session.claimed_by &&
-    !isExpired(session.expires_at)
+    !isExpiredSession(session)
   );
 }
 
@@ -64,7 +75,6 @@ async function loadSession() {
     return null;
   }
 
-  tokenText.textContent = `${token.slice(0, 8)}…`;
   const snapshot = await get(ref(database, `login_sessions/${token}`));
   latestSession = snapshot.val();
 
@@ -82,7 +92,7 @@ async function loadSession() {
     return latestSession;
   }
 
-  if (latestSession.status === "expired" || isExpired(latestSession.expires_at)) {
+  if (latestSession.status === "expired" || isExpiredSession(latestSession)) {
     setSessionBadge("Expired");
     statusText.textContent = "Session expired";
     setPanel("This session has expired. Return to the Pi and create a new login session.", "error");
@@ -163,6 +173,7 @@ async function handleRedirectResult() {
     const result = await getRedirectResult(auth);
     if (result?.user) {
       updateUser(result.user);
+      await loadSession();
       setPanel("Signed in successfully. You can claim the session now.", "idle");
     }
   } catch (error) {
@@ -175,6 +186,7 @@ signInBtn.addEventListener("click", async () => {
   try {
     const result = await signInWithPopup(auth, provider);
     updateUser(result.user);
+    await loadSession();
     setPanel("Signed in successfully. You can claim the session now.", "idle");
   } catch (error) {
     const code = String(error?.code || "");
@@ -198,7 +210,16 @@ claimBtn.addEventListener("click", async () => {
 
 window.addEventListener("DOMContentLoaded", async () => {
   try {
-    await loadSession();
+    if (!token) {
+      await loadSession();
+      return;
+    }
+
+    tokenText.textContent = `${token.slice(0, 8)}…`;
+    setSessionBadge("Sign in first");
+    statusText.textContent = "Authenticate to verify this token";
+    setPanel("Sign in with Google to verify and claim this checkout session.", "idle");
+
     await handleRedirectResult();
     claimBtn.disabled = !(currentUser && isClaimable(latestSession));
   } catch (error) {

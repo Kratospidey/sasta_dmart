@@ -33,6 +33,7 @@ def build_login_session(
         "status": "pending",
         "created_at": created_at.isoformat(),
         "expires_at": expires_at.isoformat(),
+        "expires_at_ms": int(expires_at.timestamp() * 1000),
         "pi_node": pi_node,
         "claimed_by": None,
         "claimed_at": None,
