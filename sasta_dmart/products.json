@@ -1,0 +1,20 @@
+[
+  {
+    "product_id": "00001",
+    "name": "Apple",
+    "default_price": 60.0,
+    "category": "fruit"
+  },
+  {
+    "product_id": "00002",
+    "name": "Bottle",
+    "default_price": 25.0,
+    "category": "household"
+  },
+  {
+    "product_id": "00003",
+    "name": "Bag",
+    "default_price": 10.0,
+    "category": "utility"
+  }
+]
