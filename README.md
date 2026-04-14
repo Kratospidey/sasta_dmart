@@ -27,6 +27,8 @@ Shared code:
 - `sasta_dmart/firebase.py`
 - `sasta_dmart/sessions.py`
 - `sasta_dmart/transactions.py`
+- `sasta_dmart/product_catalog.py`
+- `sasta_dmart/barcodes.py`
 - `sasta_dmart/portal/`
 
 Hosted claim page:
@@ -151,6 +153,27 @@ python -m pip install -r requirements-pi.txt
 ```bash
 python3 pi_checkout_gui_firebase.py
 ```
+
+## Product Catalog And Barcode Generator
+
+`sasta_dmart/products.json` is the product catalog source of truth for the Pi scanner and barcode generator.
+
+Install the generator tooling in your active virtualenv:
+
+```bash
+python -m pip install -r requirements-dev.txt
+```
+
+Common commands:
+
+```bash
+python generate_barcodes.py --product-id 00004 --name Milk --price 45.00 --category dairy --upsert-catalog
+python generate_barcodes.py --product-id 00001 --generate
+python generate_barcodes.py --product-id 00004 --name Milk --price 45.00 --category dairy --upsert-catalog --generate
+python generate_barcodes.py --all
+```
+
+Generated PNG files are written to `barcodes/` by default.
 
 ## Hosted Claim Page Setup
 
