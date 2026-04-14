@@ -18,8 +18,10 @@ import cv2
 from PIL import Image, ImageTk
 from pyzbar.pyzbar import decode
 
+from sasta_dmart.barcodes import ParsedBarcode, select_first_supported_candidate
 from sasta_dmart.config import load_runtime_config
 from sasta_dmart.firebase import initialize_firebase_admin
+from sasta_dmart.product_catalog import ProductCatalogError, load_product_catalog
 from sasta_dmart.sessions import (
     DEFAULT_LOGIN_SESSION_TTL_SECONDS,
     build_login_session,
@@ -63,13 +65,6 @@ PI_NODE_NAME = RUNTIME_CONFIG.pi_node_name
 WINDOW_TITLE = "Sasta Dmart Smart Checkout"
 SCAN_COOLDOWN_SECONDS = 1.5
 LOGIN_SESSION_TTL_SECONDS = DEFAULT_LOGIN_SESSION_TTL_SECONDS
-
-# Product ID -> Name
-PRODUCT_LOOKUP = {
-    "00001": "Apple",
-    "00002": "Banana",
-    "00003": "Orange",
-}
 
 THEMES = {
     "dark": {
@@ -120,6 +115,11 @@ class SelfCheckoutFirebaseApp:
         self.payment_cash_btn = None
         self.payment_card_btn = None
         self.payment_save_in_flight = False
+
+        try:
+            self.product_catalog = load_product_catalog()
+        except ProductCatalogError as exc:
+            raise SystemExit(str(exc)) from exc
 
         self._init_firebase()
         self._setup_styles()
@@ -309,10 +309,15 @@ class SelfCheckoutFirebaseApp:
 
         if self.scanning_requested and time.time() - self.last_scan_time >= SCAN_COOLDOWN_SECONDS:
             decoded = self._decode_barcodes(display_frame)
-            if decoded:
-                if self._handle_decoded_barcode(decoded[0]):
-                    self.scanning_requested = False
-                    self.last_scan_time = time.time()
+            accepted, debug_rows = select_first_supported_candidate(decoded)
+            for row in debug_rows:
+                print(
+                    f"[scanner] type={row['type']} payload={row['payload']!r} "
+                    f"status={row['status']}"
+                )
+            if accepted and self._add_scanned_item(accepted):
+                self.scanning_requested = False
+                self.last_scan_time = time.time()
 
         if self.scanning_requested:
             cv2.putText(display_frame, "Scanning... show one barcode", (18, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 50, 60), 2)
@@ -339,34 +344,19 @@ class SelfCheckoutFirebaseApp:
             self.cart_tree.yview_scroll(1, "units")
         return "break"
 
-    def _handle_decoded_barcode(self, barcode_obj):
-        try:
-            barcode_data = barcode_obj.data.decode("utf-8")
-        except Exception:
-            self.set_status("Could not decode barcode bytes.")
-            return False
-
-        if not (barcode_data.startswith("27") and len(barcode_data) >= 13):
-            self.set_status(f"Unsupported barcode format: {barcode_data}")
-            return False
-
-        product_id = barcode_data[2:7]
-        price_paise = barcode_data[7:12]
-        try:
-            unit_price = int(price_paise) / 100.0
-        except ValueError:
-            self.set_status(f"Invalid price in barcode: {barcode_data}")
-            return False
-
-        product_name = PRODUCT_LOOKUP.get(product_id, f"Unknown ({product_id})")
-        cart_key = f"{product_id}_{price_paise}"
+    def _add_scanned_item(self, parsed_barcode: ParsedBarcode):
+        product_id = parsed_barcode.product_id
+        unit_price = parsed_barcode.unit_price
+        product = self.product_catalog.get(product_id, {})
+        product_name = product.get("name", f"Unknown ({product_id})")
+        cart_key = parsed_barcode.raw_payload
         if cart_key not in self.cart:
             self.cart[cart_key] = {
                 "product_id": product_id,
                 "name": product_name,
                 "qty": 0,
                 "unit_price": unit_price,
-                "barcode": barcode_data,
+                "barcode": parsed_barcode.raw_payload,
             }
         self.cart[cart_key]["qty"] += 1
         self.refresh_cart_view()
